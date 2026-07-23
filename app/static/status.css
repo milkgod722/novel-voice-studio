@@ -1,0 +1,32 @@
+.job p {
+  margin: 3px 0;
+}
+
+.job-hint {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.cancel-job,
+.retry-job {
+  align-self: start;
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+  padding: 8px 12px;
+}
+
+.job-tools {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.delete-job {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  padding: 8px 12px;
+}

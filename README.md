@@ -1,17 +1,17 @@
 # 小说声工坊
 
-用一段**已获本人授权**的日常语音克隆音色，把 TXT / Markdown / EPUB 小说生成富有感情的 WAV 有声书。数据默认只保存在本机。
+用一段**已获本人授权**的日常语音克隆音色，把 TXT / Markdown / EPUB 小说生成富有感情的 WAV 有声书。文件与生成结果保存在本机；选择 MiMo 引擎时，合成所需的语音样本和小说分段会发送至小米 MiMo API。
 
 ## 已实现
 
 - 浏览器上传微信导出的 WAV / MP3 / M4A / OGG / WebM；自动转为 24 kHz 单声道并做响度、带宽标准化。
 - 中文编码识别、EPUB 正文抽取、章节识别、长文本按语义断句。
 - 每个片段从文本规划 8 维情感（快乐、愤怒、悲伤、恐惧、厌恶、忧郁、惊讶、平静）。
-- IndexTTS2 音色/情感解耦推理适配器；单 GPU 串行队列，片段缓存可用于失败续跑。
-- WAV 无损拼接、进度轮询、网页试听/下载、合成来源 `provenance.json`。
-- 强制授权确认；不把声音或小说上传到第三方。
+- MiMo V2.5 VoiceClone 云端引擎，以及可选的本地 IndexTTS2 引擎；串行队列和片段缓存可用于失败续跑。
+- WAV 无损拼接、进度轮询、网页内嵌播放器、独立下载、合成来源 `provenance.json`。
+- 强制授权确认；mock 测试引擎禁止创建正式任务，避免把测试音误认为语音。
 
-> 演示引擎会生成可听见的测试音，不会克隆声音。它用来快速验证完整产品流程。真实克隆需要按下文安装 IndexTTS2。
+> 使用 MiMo 时，参考语音和小说分段会发送至小米 MiMo API。API Key 只保存在当前服务进程内，不写入磁盘；服务重启后需要重新输入。
 
 ## 1. 运行应用（演示模式）
 
@@ -24,7 +24,27 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 打开 <http://127.0.0.1:8000>。不要使用系统现有的 Python 3.14；PyTorch/IndexTTS2 使用独立的 Python 3.11 环境。
 
-## 2. 启用真实音色克隆
+## 2. 启用 MiMo V2.5 真实音色克隆（推荐）
+
+保持网页打开，在页面顶部输入 MiMo 开放平台按量调用的 `sk-...` API Key，点击“启用 MiMo 真实语音”。启用成功后生成按钮会自动解锁。Key 使用密码输入框，只保存在 Python 进程内，不会进入 `data/`、日志或 Git。
+
+Token Plan 的 `tp-...` Key 不能用于本项目。官方限定 Token Plan 只能用于编程工具场景，禁止用于自定义应用后端等明显非 Coding 请求；即使该 Key 能成功请求 `mimo-v2.5-pro`，也不能用于小说 TTS。请从 MiMo 开放平台的“API Keys”页面创建按量调用的 `sk-...` Key。
+
+也可以在启动前使用环境变量：
+
+```powershell
+$env:MIMO_API_KEY="你的 Key"
+$env:NVS_ENGINE="mimo"
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+不要把真实 Key 写进代码或提交到仓库。`.env` 和 `.env.*` 已加入 `.gitignore`。
+
+MiMo 官方接口要求参考音频为 WAV/MP3，Base64 后不超过 10MB。本项目会把小说按约 400 字分段，为每段生成对应的有声书情感指令，并无损拼接返回的 24kHz WAV。
+
+MiMo 返回的 Base64 音频通常有数 MB。为避免本机系统代理截断长响应，项目默认对 MiMo 使用直连，并会对 `IncompleteRead`、连接重置、超时、HTTP 429/5xx 自动重试最多 3 次。确实需要系统代理时可设置 `$env:MIMO_USE_SYSTEM_PROXY="true"`。失败任务可在作品台点击“从断点继续”，已落盘分片不会重复调用 API。
+
+## 3. 可选：本地 IndexTTS2
 
 先安装模型（权重较大，需要稳定网络）：
 
@@ -74,8 +94,13 @@ uv run pytest
 - `POST /api/books`：上传小说（multipart: `file`, `title`）
 - `POST /api/jobs`：创建生成任务
 - `GET /api/jobs/{id}`：查询进度
-- `GET /api/jobs/{id}/audio`：试听/下载
+- `POST /api/config/mimo`：在内存中启用 MiMo 引擎
+- `POST /api/jobs/{job_id}/retry`：从已生成分片继续失败任务
+- `POST /api/jobs/{job_id}/cancel`：请求取消运行中任务
+- `DELETE /api/jobs/{job_id}`：删除已结束作品及其全部音频文件
+- `GET /api/jobs/{id}/audio`：网页内嵌播放
+- `GET /api/jobs/{id}/download`：下载 WAV
 
 ## 生产化建议
 
-当前版本适合单机个人使用。若要开放给多人，必须增加登录、配额、加密存储、删除权、审计、显式合成标识与滥用检测；不要直接把本地服务暴露到公网。IndexTTS2 的模型许可包含使用限制，商业发布前应重新审阅其当前许可证并咨询法律意见。
+当前版本适合单机个人使用。若要开放给多人，必须增加登录、配额、加密存储、删除权、审计、显式合成标识与滥用检测；不要直接把本地服务暴露到公网。使用 MiMo 前应审阅其服务协议与隐私政策；使用 IndexTTS2 时还需审阅模型许可证。

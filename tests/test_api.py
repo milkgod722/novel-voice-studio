@@ -17,16 +17,22 @@ def make_wav():
 
 
 def test_http_end_to_end(tmp_path):
-    app = create_app(Settings(tmp_path, "mock", None, None))
+    app = create_app(Settings(tmp_path, "mock", None, None, allow_mock_jobs=True))
     with TestClient(app) as client:
         health = client.get("/api/health").json()
-        assert health == {"status": "ok", "engine": "mock", "real_voice_cloning": False}
+        assert health == {
+            "status": "ok",
+            "engine": "mock",
+            "real_voice_cloning": False,
+            "jobs_enabled": True,
+        }
         voice = client.post("/api/voices", files={"file": ("chat.wav", make_wav(), "audio/wav")}, data={"name": "我", "consent": "true"})
         assert voice.status_code == 201, voice.text
         book = client.post("/api/books", files={"file": ("book.txt", "第1章\n你好，世界！".encode(), "text/plain")}, data={"title": "测试书"})
         assert book.status_code == 201, book.text
-        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0})
+        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50})
         assert job.status_code == 202
+        assert job.json()["preview_chars"] == 50
         for _ in range(100):
             state = client.get(f"/api/jobs/{job.json()['id']}").json()
             if state["status"] == "completed": break
@@ -34,3 +40,19 @@ def test_http_end_to_end(tmp_path):
         audio = client.get(f"/api/jobs/{job.json()['id']}/audio")
         assert audio.status_code == 200
         assert audio.headers["content-type"] == "audio/wav"
+        assert "content-disposition" not in audio.headers
+        download = client.get(f"/api/jobs/{job.json()['id']}/download")
+        assert download.status_code == 200
+        assert download.headers["content-disposition"].startswith("attachment;")
+        finished_cancel = client.post(f"/api/jobs/{job.json()['id']}/cancel")
+        assert finished_cancel.status_code == 400
+        removed = client.delete(f"/api/jobs/{job.json()['id']}")
+        assert removed.status_code == 204
+        assert client.get(f"/api/jobs/{job.json()['id']}").status_code == 404
+        token_plan = client.post("/api/config/mimo", json={"api_key": "tp-test-api-key"})
+        assert token_plan.status_code == 400
+        assert "Token Plan" in token_plan.json()["detail"]
+        configured = client.post("/api/config/mimo", json={"api_key": "sk-test-api-key"})
+        assert configured.status_code == 200
+        assert configured.json()["engine"] == "mimo-v2.5-tts-voiceclone"
+        assert configured.json()["real_voice_cloning"] is True

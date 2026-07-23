@@ -2,15 +2,15 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>小说声工坊</title><link rel="stylesheet" href="/styles.css">
+  <title>小说声工坊</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/status.css">
 </head>
 <body>
   <main>
-    <header><span class="eyebrow">LOCAL · PRIVATE · EXPRESSIVE</span><h1>让你的声音，<br><i>住进一本书。</i></h1><p>导入一段日常语音与小说，自动逐句判断情绪，生成自然、有起伏的个人有声书。</p><div id="engine" class="engine">正在连接引擎…</div></header>
+    <header><span class="eyebrow">LOCAL · EXPRESSIVE · CONSENT FIRST</span><h1>让你的声音，<br><i>住进一本书。</i></h1><p>导入一段日常语音与小说，自动逐句判断情绪，生成自然、有起伏的个人有声书。</p><div class="engine-area"><div id="engine" class="engine">正在连接引擎…</div><form id="mimo-form" class="mimo-config"><label>MiMo API Key（仅保存在当前进程内）<input name="api_key" type="password" autocomplete="off" placeholder="粘贴后不会写入磁盘" required></label><button>启用 MiMo 真实语音</button><small>启用后，参考语音与小说分段会发送至小米 MiMo API。</small></form></div></header>
     <section class="steps">
       <article><b>01</b><h2>留下声音</h2><p>建议上传 10–30 秒安静环境中的微信语音。正常聊天即可，不必刻意播音。</p><form id="voice-form"><label>声音名称<input name="name" value="我的声音"></label><label class="drop">选择语音文件<input name="file" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" required></label><label class="consent"><input name="consent" type="checkbox" required> 我确认已获得声音本人的明确授权，仅用于合法用途</label><button>保存声音</button></form></article>
       <article><b>02</b><h2>放入小说</h2><p>支持 TXT、Markdown、EPUB，自动识别中文编码与章节。</p><form id="book-form"><label>书名（可选）<input name="title" placeholder="留空则使用文件名"></label><label class="drop">选择小说文件<input name="file" type="file" accept=".txt,.md,.epub" required></label><button>导入小说</button></form></article>
-      <article><b>03</b><h2>开始演绎</h2><p>为叙述保持克制，为对白增加情绪；强度 0.55–0.75 通常最自然。</p><form id="job-form"><label>声音<select name="voice_id" required></select></label><label>小说<select name="book_id" required></select></label><div class="range"><label>起始章<input name="chapter_start" type="number" min="1" value="1"></label><label>结束章<input name="chapter_end" type="number" min="1" placeholder="末章"></label></div><label>情感强度 <output id="strength-value">65%</output><input name="emotion_strength" type="range" min="0" max="1" step="0.05" value="0.65"></label><button>生成有声书</button></form></article>
+      <article><b>03</b><h2>开始演绎</h2><p>为叙述保持克制，为对白增加情绪；建议先生成前 300 字试听样片。</p><form id="job-form"><label>声音<select name="voice_id" required></select></label><label>小说<select name="book_id" required></select></label><div class="range"><label>起始章<input name="chapter_start" type="number" min="1" value="1"></label><label>结束章<input name="chapter_end" type="number" min="1" placeholder="末章"></label></div><label>情感强度 <output id="strength-value">65%</output><input name="emotion_strength" type="range" min="0" max="1" step="0.05" value="0.65"></label><div class="job-actions"><button class="generate-button" name="mode" value="preview">生成试听样片</button><button class="generate-button secondary" name="mode" value="full">生成完整范围</button></div><small id="job-hint" class="job-hint">MiMo 试听为非流式生成，提交后通常需要等待数分钟。</small></form></article>
     </section>
     <section class="jobs"><div><span class="eyebrow">RENDER QUEUE</span><h2>作品台</h2></div><div id="jobs"><p class="empty">还没有作品。完成上面三步，它会出现在这里。</p></div></section>
   </main><div id="toast"></div><script src="/app.js"></script>

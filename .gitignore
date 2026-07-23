@@ -5,3 +5,6 @@ __pycache__/
 data/
 IndexTTS2/
 checkpoints/
+indextts-main.zip
+.env
+.env.*
