@@ -1,0 +1,19 @@
+[project]
+name = "novel-voice-studio"
+version = "0.1.0"
+description = "Local, consent-first emotional audiobook generation with voice cloning"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "fastapi==0.116.1",
+  "uvicorn[standard]==0.35.0",
+  "python-multipart==0.0.20",
+  "charset-normalizer==3.4.2",
+  "imageio-ffmpeg==0.6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.1", "httpx==0.28.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
