@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -11,7 +12,13 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .service import StudioService
 from .storage import Store
-from .synth import MiMoVoiceCloneSynthesizer, build_synthesizer
+from .synth import (
+    DEFAULT_MIMO_MODEL,
+    DEFAULT_QWEN_MODEL,
+    MiMoVoiceCloneSynthesizer,
+    Qwen3TTSSynthesizer,
+    build_synthesizer,
+)
 
 
 class JobRequest(BaseModel):
@@ -23,8 +30,25 @@ class JobRequest(BaseModel):
     preview_chars: int | None = Field(default=None, ge=50, le=2000)
 
 
-class MiMoConfigRequest(BaseModel):
-    api_key: str = Field(min_length=8, max_length=512)
+class VoiceCloneConfigRequest(BaseModel):
+    protocol: Literal["mimo-chat", "qwen3-tts-local"] = "mimo-chat"
+    api_url: str | None = Field(
+        default="https://api.xiaomimimo.com/v1/chat/completions",
+        max_length=2048,
+    )
+    api_key: str | None = Field(default=None, max_length=512)
+    model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/\\-]{0,511}$",
+    )
+    auth_mode: Literal["api-key", "bearer"] = "api-key"
+    device: str = Field(
+        default="auto",
+        max_length=32,
+        pattern=r"^(auto|cpu|cuda(?::[0-9]+)?)$",
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -38,6 +62,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.mimo_api_key,
             settings.mimo_base_url,
             settings.mimo_use_system_proxy,
+            settings.mimo_model,
+            settings.mimo_auth_mode,
+            settings.qwen_model,
+            settings.qwen_device,
         ),
         settings.max_upload_mb, settings.chunk_chars, settings.allow_mock_jobs,
     )
@@ -55,25 +83,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def health_payload():
         real = service.synth.name != "mock"
-        return {
+        payload = {
             "status": "ok",
             "engine": service.synth.name,
             "real_voice_cloning": real,
             "jobs_enabled": real or service.allow_mock_jobs,
         }
+        if service.synth.provider == "voice-clone":
+            payload.update(
+                protocol=service.synth.protocol,
+                api_url=service.synth.api_url,
+                auth_mode=service.synth.auth_mode,
+            )
+        elif service.synth.provider == "qwen3-tts":
+            payload.update(
+                protocol=service.synth.protocol,
+                device=service.synth.device,
+            )
+        return payload
 
     @app.get("/api/health")
     def health():
         return health_payload()
 
     @app.post("/api/config/mimo")
-    def configure_mimo(request: MiMoConfigRequest):
+    @app.post("/api/config/voice-clone")
+    def configure_voice_clone(request: VoiceCloneConfigRequest):
         try:
-            service.set_synthesizer(MiMoVoiceCloneSynthesizer(
-                request.api_key,
-                settings.mimo_base_url,
-                use_system_proxy=settings.mimo_use_system_proxy,
-            ))
+            if request.protocol == "qwen3-tts-local":
+                service.set_synthesizer(Qwen3TTSSynthesizer(
+                    request.model or DEFAULT_QWEN_MODEL,
+                    device=request.device,
+                ))
+            else:
+                if not request.api_key or len(request.api_key.strip()) < 8:
+                    raise ValueError("远程语音克隆 API Key 至少需要 8 个字符")
+                if not request.api_url:
+                    raise ValueError("远程语音克隆必须填写 API URL")
+                service.set_synthesizer(MiMoVoiceCloneSynthesizer(
+                    request.api_key,
+                    request.api_url,
+                    use_system_proxy=settings.mimo_use_system_proxy,
+                    model=request.model or DEFAULT_MIMO_MODEL,
+                    auth_mode=request.auth_mode,
+                ))
             return health_payload()
         except (ValueError, RuntimeError) as exc:
             raise api_error(exc) from exc
@@ -87,9 +140,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/voices", status_code=201)
-    def add_voice(file: UploadFile = File(...), name: str = Form("我的声音"), consent: bool = Form(...)):
+    def add_voice(
+        file: UploadFile = File(...),
+        name: str = Form("我的声音"),
+        consent: bool = Form(...),
+        transcript: str = Form(""),
+    ):
         try:
-            return service.add_voice(file.file, file.filename or "voice.wav", name, consent)
+            return service.add_voice(
+                file.file, file.filename or "voice.wav", name, consent, transcript
+            )
         except (ValueError, RuntimeError) as exc:
             raise api_error(exc) from exc
 

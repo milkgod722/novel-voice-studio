@@ -26,8 +26,15 @@ def test_http_end_to_end(tmp_path):
             "real_voice_cloning": False,
             "jobs_enabled": True,
         }
-        voice = client.post("/api/voices", files={"file": ("chat.wav", make_wav(), "audio/wav")}, data={"name": "我", "consent": "true"})
+        voice = client.post(
+            "/api/voices",
+            files={"file": ("chat.wav", make_wav(), "audio/wav")},
+            data={"name": "我", "consent": "true", "transcript": "这是参考语音。"},
+        )
         assert voice.status_code == 201, voice.text
+        assert voice.json()["transcript_chars"] == 7
+        reference_text = tmp_path / "voices" / voice.json()["id"] / "reference.txt"
+        assert reference_text.read_text(encoding="utf-8") == "这是参考语音。"
         book = client.post("/api/books", files={"file": ("book.txt", "第1章\n你好，世界！".encode(), "text/plain")}, data={"title": "测试书"})
         assert book.status_code == 201, book.text
         job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50})
@@ -52,7 +59,24 @@ def test_http_end_to_end(tmp_path):
         token_plan = client.post("/api/config/mimo", json={"api_key": "tp-test-api-key"})
         assert token_plan.status_code == 400
         assert "Token Plan" in token_plan.json()["detail"]
-        configured = client.post("/api/config/mimo", json={"api_key": "sk-test-api-key"})
+        invalid_model = client.post(
+            "/api/config/mimo",
+            json={"api_key": "sk-test-api-key", "model": "bad model"},
+        )
+        assert invalid_model.status_code == 422
+        configured = client.post(
+            "/api/config/voice-clone",
+            json={
+                "protocol": "mimo-chat",
+                "api_url": "http://127.0.0.1:9000/v1",
+                "api_key": "gateway-test-key",
+                "model": "mimo-user-voiceclone",
+                "auth_mode": "bearer",
+            },
+        )
         assert configured.status_code == 200
-        assert configured.json()["engine"] == "mimo-v2.5-tts-voiceclone"
+        assert configured.json()["engine"] == "mimo-user-voiceclone"
         assert configured.json()["real_voice_cloning"] is True
+        assert configured.json()["api_url"] == "http://127.0.0.1:9000/v1/chat/completions"
+        assert configured.json()["auth_mode"] == "bearer"
+        assert configured.json()["protocol"] == "mimo-chat"

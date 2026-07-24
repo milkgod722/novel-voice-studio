@@ -8,17 +8,19 @@
 
 ## 二、核心选型
 
-### 主引擎：MiMo V2.5 TTS VoiceClone
+### 主引擎：可配置的 VoiceClone 兼容接口与本地 Qwen3-TTS
 
 选择理由：
 
-1. `mimo-v2.5-tts-voiceclone` 直接接收 WAV/MP3 音频样本，无需本地下载模型；
+1. 默认使用 `mimo-v2.5-tts-voiceclone`，用户可配置 API URL、模型名称以及 `api-key` / Bearer 鉴权；
 2. 支持通过自然语言指令控制情感、语速、角色和停顿；
 3. 返回标准 WAV，能直接接入现有的分片缓存、拼接和网页播放器；
 4. API Key 可由网页注入内存，项目和磁盘不保存密钥；
 5. 可在普通电脑运行，不依赖本地 CUDA 环境。
 
-官方接口与模型说明：<https://mimo.mi.com/docs/en-US/quick-start/usage-guide/audio/speech-synthesis-v2.5>。调用时参考语音和小说分段会发送到小米服务，用户应在上传前理解并接受这一数据边界。
+默认接口与模型说明：<https://mimo.mi.com/docs/en-US/quick-start/usage-guide/audio/speech-synthesis-v2.5>。调用时参考语音和小说分段会发送到用户配置的 URL，用户应在上传前理解并接受这一数据边界。当前 `mimo-chat` 协议要求与 MiMo 的 Chat Completions VoiceClone JSON 契约兼容；非同构厂商需新增适配器。
+
+本地 `qwen3-tts-local` 适配器使用 `Qwen/Qwen3-TTS-12Hz-1.7B-Base` 的 `generate_voice_clone` 接口。上传参考声音时同时保存可选的逐字文本；有文本时创建完整 voice clone prompt，没有文本时退化到 `x_vector_only_mode`。模型和 prompt 都在进程内复用，生成 WAV 后继续进入现有的分片、恢复、拼接和网页播放链路。该 Base 检查点没有 instruction control 接口，因此文本情感向量不会传入 Qwen，不能宣称与 MiMo 同等级的显式情绪控制。
 
 备选是本地 IndexTTS2，适合不能把声音发送到云端的环境；现有 `IndexTTS2Synthesizer` 仍然保留。
 
@@ -51,7 +53,7 @@ flowchart LR
 
 ### 推理与恢复
 
-`app/synth.py` 是引擎抽象。`MiMoVoiceCloneSynthesizer` 把情感向量转换为中文演播指令，将参考 WAV 作为 Base64 音色样本调用官方 OpenAI 兼容接口，并校验返回内容确实为 WAV。MiMo 请求默认绕过系统代理直连；对响应截断、连接重置、超时、429 和 5xx 使用指数退避重试。每个片段以序号落盘；同一任务失败后可从断点继续，已有 WAV 不重复计算。`MockSynthesizer` 只用于自动化测试，正常服务会拒绝用它创建任务。
+`app/synth.py` 是引擎抽象。`MiMoVoiceCloneSynthesizer` 当前实现 `mimo-chat` 兼容协议：把情感向量转换为中文演播指令，将参考 WAV 作为 Base64 音色样本发送到用户配置的 URL，并校验返回内容确实为 WAV。请求默认绕过系统代理直连；对响应截断、连接重置、超时、429 和 5xx 使用指数退避重试。每个片段以序号落盘；同一任务失败后可从断点继续，已有 WAV 不重复计算。完全不同协议应实现新的 `Synthesizer` 子类。`MockSynthesizer` 只用于自动化测试，正常服务会拒绝用它创建任务。
 
 ### 存储与来源
 
@@ -72,7 +74,8 @@ flowchart LR
 | 安全 | 未勾选本人授权时拒绝保存声音 | 通过 |
 | 服务 E2E | WAV 参考音 + 两章小说 → 队列 → 分片 → 拼接 → 来源记录 | 通过 |
 | HTTP E2E | 上传声音、上传小说、创建任务、查询、下载 WAV | 通过 |
-| MiMo 合约 | Base64 音色、角色消息、情感指令、API 头、WAV 解码 | 通过 |
+| VoiceClone 兼容合约 | 自定义 URL/模型/鉴权、Base64 音色、角色消息、WAV 解码 | 通过 |
+| Qwen3-TTS 适配合约 | 参考文本、x-vector 降级、prompt 缓存、WAV 写出、配置接口 | 通过 |
 | UI | 桌面三栏、表单可访问性、引擎状态、390×844 响应式与无横向溢出 | 通过 |
 | 真实模型声学 | 需用户提供获授权真人语音并下载模型权重 | 待素材 |
 

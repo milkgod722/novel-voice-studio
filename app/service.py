@@ -120,7 +120,14 @@ class StudioService:
                 output.write(block)
         return size
 
-    def add_voice(self, source: BinaryIO, filename: str, name: str, consent: bool) -> dict:
+    def add_voice(
+        self,
+        source: BinaryIO,
+        filename: str,
+        name: str,
+        consent: bool,
+        transcript: str = "",
+    ) -> dict:
         if not consent:
             raise ValueError("必须确认已取得声音本人明确授权")
         item_id = self.store.new_id()
@@ -128,7 +135,19 @@ class StudioService:
         raw = folder / ("source" + Path(filename or "voice.wav").suffix.lower())
         self._copy_limited(source, raw)
         info = normalize_reference(raw, folder / "reference.wav")
-        meta = {"id": item_id, "name": name.strip() or "我的声音", "filename": filename, "consent": True, "created_at": now_iso(), **info}
+        normalized_transcript = " ".join(transcript.split())
+        if len(normalized_transcript) > 2000:
+            raise ValueError("参考语音文字不能超过 2000 个字符")
+        (folder / "reference.txt").write_text(normalized_transcript, encoding="utf-8")
+        meta = {
+            "id": item_id,
+            "name": name.strip() or "我的声音",
+            "filename": filename,
+            "consent": True,
+            "transcript_chars": len(normalized_transcript),
+            "created_at": now_iso(),
+            **info,
+        }
         self.store.save_meta("voices", item_id, meta)
         return meta
 
@@ -164,7 +183,7 @@ class StudioService:
         preview_chars: int | None = None,
     ) -> dict:
         if self.synth.name == "mock" and not self.allow_mock_jobs:
-            raise ValueError("当前是演示引擎，不能生成真实语音。请先启用 MiMo 或 IndexTTS2")
+            raise ValueError("当前是演示引擎，不能生成真实语音。请先启用 MiMo、Qwen3-TTS 或 IndexTTS2")
         voice = self.store.load_meta("voices", voice_id)
         book = self.store.load_meta("books", book_id)
         count = int(book["chapter_count"])
@@ -229,11 +248,12 @@ class StudioService:
                 part = folder / "parts" / f"{index:05d}.wav"
                 emotion = plan_emotion(text, meta["emotion_strength"])
                 if not part.exists():
-                    meta["stage"] = (
-                        f"正在等待 MiMo 返回第 {index + 1}/{len(chunks)} 段"
-                        if self.synth.name.startswith("mimo-")
-                        else f"正在生成第 {index + 1}/{len(chunks)} 段"
-                    )
+                    if self.synth.provider == "voice-clone":
+                        meta["stage"] = f"正在等待语音克隆 API 返回第 {index + 1}/{len(chunks)} 段"
+                    elif self.synth.provider == "qwen3-tts" and index == 0:
+                        meta["stage"] = "正在加载 Qwen3-TTS（首次运行会下载模型）"
+                    else:
+                        meta["stage"] = f"正在生成第 {index + 1}/{len(chunks)} 段"
                     self._save_job(meta)
                     self.synth.synthesize(voice_dir / "reference.wav", text, emotion, part)
                     self._raise_if_cancelled(job_id, meta)

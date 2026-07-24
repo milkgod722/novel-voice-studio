@@ -4,6 +4,7 @@ import json
 import wave
 from http.client import IncompleteRead
 
+from app.config import Settings
 from app.synth import MiMoVoiceCloneSynthesizer
 
 
@@ -57,6 +58,58 @@ def test_mimo_voice_clone_request_and_wav_response(tmp_path, monkeypatch):
     assert headers["api-key"] == "sk-test-key"
 
 
+def test_mimo_uses_custom_model_name(tmp_path):
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(make_wav())
+    generated = make_wav()
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        response = {"choices": [{"message": {"audio": {"data": base64.b64encode(generated).decode()}}}]}
+        return FakeResponse(json.dumps(response).encode())
+
+    synth = MiMoVoiceCloneSynthesizer(
+        "gateway-secret",
+        "https://gateway.example.test/v1",
+        model="mimo-custom-voiceclone",
+        auth_mode="bearer",
+    )
+    synth._open = fake_urlopen
+    synth.synthesize(reference, "自定义模型。", [0, 0, 0, 0, 0, 0, 0, 1], tmp_path / "out.wav")
+
+    assert synth.name == "mimo-custom-voiceclone"
+    assert synth.api_url == "https://gateway.example.test/v1/chat/completions"
+    assert synth.auth_mode == "bearer"
+    assert captured["payload"]["model"] == "mimo-custom-voiceclone"
+
+
+def test_custom_endpoint_and_bearer_auth_are_sent(tmp_path):
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(make_wav())
+    generated = make_wav()
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        response = {"choices": [{"message": {"audio": {"data": base64.b64encode(generated).decode()}}}]}
+        return FakeResponse(json.dumps(response).encode())
+
+    synth = MiMoVoiceCloneSynthesizer(
+        "gateway-secret",
+        "http://127.0.0.1:9000/custom/voice-clone",
+        model="local-clone-model",
+        auth_mode="bearer",
+    )
+    synth._open = fake_urlopen
+    synth.synthesize(reference, "网关测试。", [0, 0, 0, 0, 0, 0, 0, 1], tmp_path / "out.wav")
+
+    assert captured["url"] == "http://127.0.0.1:9000/custom/voice-clone"
+    assert captured["headers"]["authorization"] == "Bearer gateway-secret"
+    assert "api-key" not in captured["headers"]
+
+
 def test_mimo_rejects_token_plan_key_for_non_coding_app():
     try:
         MiMoVoiceCloneSynthesizer("tp-not-valid-for-this-app")
@@ -69,6 +122,38 @@ def test_mimo_rejects_token_plan_key_for_non_coding_app():
 def test_mimo_normalizes_bearer_prefix():
     synth = MiMoVoiceCloneSynthesizer("Bearer sk-example")
     assert synth._api_key == "sk-example"
+
+
+def test_mimo_rejects_invalid_model_name():
+    try:
+        MiMoVoiceCloneSynthesizer("sk-example", model="bad model name")
+        assert False, "expected model validation"
+    except RuntimeError as exc:
+        assert "模型名称格式无效" in str(exc)
+
+
+def test_voice_clone_rejects_invalid_api_url():
+    try:
+        MiMoVoiceCloneSynthesizer("gateway-secret", "file:///tmp/voice")
+        assert False, "expected URL validation"
+    except RuntimeError as exc:
+        assert "API URL" in str(exc)
+
+
+def test_mimo_model_can_come_from_environment(monkeypatch):
+    monkeypatch.setenv("VOICE_CLONE_MODEL", "mimo-env-voiceclone")
+    monkeypatch.setenv("VOICE_CLONE_API_URL", "http://127.0.0.1:9000/v1")
+    monkeypatch.setenv("VOICE_CLONE_AUTH_MODE", "bearer")
+    settings = Settings.from_env()
+    assert settings.mimo_model == "mimo-env-voiceclone"
+    assert settings.mimo_base_url == "http://127.0.0.1:9000/v1"
+    assert settings.mimo_auth_mode == "bearer"
+
+
+def test_token_plan_environment_key_does_not_auto_enable_mimo(monkeypatch):
+    monkeypatch.delenv("NVS_ENGINE", raising=False)
+    monkeypatch.setenv("MIMO_API_KEY", "tp-environment-key")
+    assert Settings.from_env().engine == "mock"
 
 
 def test_mimo_retries_incomplete_response(tmp_path, monkeypatch):

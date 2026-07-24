@@ -1,10 +1,12 @@
 .venv/
+.venv-qwen/
 __pycache__/
 .pytest_cache/
 *.pyc
 data/
 IndexTTS2/
 checkpoints/
+models/
 indextts-main.zip
 .env
 .env.*
