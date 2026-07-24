@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-from .audio import concatenate_wavs, normalize_reference, write_provenance
-from .emotion import plan_emotion
+from .audio import concatenate_wavs, encode_mp3, normalize_reference, write_provenance
+from .emotion import plan_emotion_sequence
 from .storage import Store
 from .synth import Synthesizer
 from .text import SUPPORTED_BOOKS, chunk_text, extract_book, split_chapters
@@ -181,9 +181,10 @@ class StudioService:
         chapter_end: int | None,
         emotion_strength: float,
         preview_chars: int | None = None,
+        output_format: str = "mp3",
     ) -> dict:
         if self.synth.name == "mock" and not self.allow_mock_jobs:
-            raise ValueError("当前是演示引擎，不能生成真实语音。请先启用 MiMo、Qwen3-TTS 或 IndexTTS2")
+            raise ValueError("当前是演示引擎，不能生成真实语音。请先配置一个远程 TTS API")
         voice = self.store.load_meta("voices", voice_id)
         book = self.store.load_meta("books", book_id)
         count = int(book["chapter_count"])
@@ -191,6 +192,8 @@ class StudioService:
         if chapter_start < 0 or end < chapter_start or end >= count:
             raise ValueError("章节范围无效")
         normalized_strength = max(0.0, min(1.0, emotion_strength))
+        if output_format not in {"mp3", "wav"}:
+            raise ValueError("成品格式仅支持 MP3 或 WAV")
         for active in self.store.list_meta("jobs"):
             if active.get("status") not in {"queued", "running"}:
                 continue
@@ -201,6 +204,7 @@ class StudioService:
                 and active.get("chapter_end") == end
                 and active.get("preview_chars") == preview_chars
                 and active.get("emotion_strength") == normalized_strength
+                and active.get("output_format", "mp3") == output_format
             )
             if same_request:
                 raise ValueError("相同的任务已经在生成或排队，请勿重复提交")
@@ -208,7 +212,8 @@ class StudioService:
         meta = {
             "id": job_id, "voice_id": voice["id"], "book_id": book["id"], "chapter_start": chapter_start,
             "chapter_end": end, "emotion_strength": normalized_strength,
-            "preview_chars": preview_chars, "engine": self.synth.name, "status": "queued",
+            "preview_chars": preview_chars, "output_format": output_format,
+            "engine": self.synth.name, "status": "queued",
             "stage": "等待生成线程", "progress": 0, "created_at": now_iso(), "error": None,
         }
         self._save_job(meta)
@@ -241,17 +246,15 @@ class StudioService:
                 chunks = [chunk for chapter in selected for chunk in chunk_text(str(chapter["text"]), chunk_limit)]
             if not chunks:
                 raise ValueError("所选章节没有可朗读内容")
+            emotions = plan_emotion_sequence(chunks, meta["emotion_strength"])
             parts: list[Path] = []
             manifest = []
-            for index, text in enumerate(chunks):
+            for index, (text, emotion) in enumerate(zip(chunks, emotions)):
                 self._raise_if_cancelled(job_id, meta)
                 part = folder / "parts" / f"{index:05d}.wav"
-                emotion = plan_emotion(text, meta["emotion_strength"])
                 if not part.exists():
-                    if self.synth.provider == "voice-clone":
+                    if self.synth.provider in {"voice-clone", "remote-api"}:
                         meta["stage"] = f"正在等待语音克隆 API 返回第 {index + 1}/{len(chunks)} 段"
-                    elif self.synth.provider == "qwen3-tts" and index == 0:
-                        meta["stage"] = "正在加载 Qwen3-TTS（首次运行会下载模型）"
                     else:
                         meta["stage"] = f"正在生成第 {index + 1}/{len(chunks)} 段"
                     self._save_job(meta)
@@ -264,16 +267,34 @@ class StudioService:
                 self._save_job(meta)
             meta["stage"] = "正在合并音频"
             self._save_job(meta)
-            output = folder / "audiobook.wav"
-            concatenate_wavs(parts, output)
+            combined_wav = folder / "audiobook.wav"
+            concatenate_wavs(parts, combined_wav, crossfade_ms=40)
+            output_format = meta.get("output_format", "mp3")
+            output = folder / f"audiobook.{output_format}"
+            if output_format == "mp3":
+                meta["stage"] = "正在压缩 MP3 成品"
+                self._save_job(meta)
+                encode_mp3(combined_wav, output)
+                combined_wav.unlink(missing_ok=True)
             write_provenance(folder / "provenance.json", {
                 "generated_at": now_iso(), "synthetic_audio": True, "consent_confirmed": True,
-                "engine": self.synth.name, "voice_id": meta["voice_id"], "book_id": meta["book_id"], "segments": manifest,
+                "engine": self.synth.name, "voice_id": meta["voice_id"], "book_id": meta["book_id"],
+                "output_format": output_format,
+                "continuity": {"emotion_smoothing": "15/70/15", "crossfade_ms": 40},
+                "segments": manifest,
             })
             meta.update(
                 status="completed", stage="可以在线播放", progress=100,
-                completed_at=now_iso(), output="audiobook.wav",
+                completed_at=now_iso(), output=output.name,
+                output_format=output_format, output_bytes=output.stat().st_size,
+                render_version=2,
             )
+            try:
+                shutil.rmtree(folder / "parts")
+            except OSError:
+                # The finished file is valid even if antivirus/indexing briefly
+                # keeps a cache handle open. A later delete still removes it.
+                pass
         except JobCancelled:
             meta.update(status="cancelled", stage="已取消", completed_at=now_iso(), error=None)
         except Exception as exc:

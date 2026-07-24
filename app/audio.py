@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from array import array
 import json
 import shutil
 import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -55,22 +57,84 @@ def normalize_reference(source: Path, target: Path) -> dict[str, float | int]:
     return info
 
 
-def concatenate_wavs(parts: list[Path], output: Path, pause_ms: int = 180) -> None:
+def concatenate_wavs(parts: list[Path], output: Path, crossfade_ms: int = 40) -> None:
     if not parts:
         raise ValueError("没有可拼接的音频片段")
     output.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(parts[0]), "rb") as first:
         params = first.getparams()
-    silence = b"\x00" * int(params.framerate * pause_ms / 1000) * params.nchannels * params.sampwidth
+    if params.sampwidth != 2:
+        raise ValueError("音频拼接仅支持 16-bit PCM WAV")
+    overlap_frames = max(0, int(params.framerate * crossfade_ms / 1000))
+    expected = (params.nchannels, params.sampwidth, params.framerate)
+
+    def pcm_bytes(samples: array) -> bytes:
+        if sys.byteorder == "little":
+            return samples.tobytes()
+        encoded = array("h", samples)
+        encoded.byteswap()
+        return encoded.tobytes()
+
     with wave.open(str(output), "wb") as writer:
         writer.setparams(params)
-        for index, path in enumerate(parts):
+        pending: array | None = None
+        for path in parts:
             with wave.open(str(path), "rb") as reader:
-                if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (params.nchannels, params.sampwidth, params.framerate):
+                actual = (reader.getnchannels(), reader.getsampwidth(), reader.getframerate())
+                if actual != expected:
                     raise ValueError(f"音频片段格式不一致: {path.name}")
-                writer.writeframes(reader.readframes(reader.getnframes()))
-            if index + 1 < len(parts):
-                writer.writeframes(silence)
+                samples = array("h")
+                samples.frombytes(reader.readframes(reader.getnframes()))
+                if sys.byteorder != "little":
+                    samples.byteswap()
+            if pending is None:
+                pending = samples
+                continue
+            frames = min(
+                overlap_frames,
+                len(pending) // params.nchannels,
+                len(samples) // params.nchannels,
+            )
+            overlap_samples = frames * params.nchannels
+            if not overlap_samples:
+                writer.writeframes(pcm_bytes(pending))
+                pending = samples
+                continue
+            writer.writeframes(pcm_bytes(pending[:-overlap_samples]))
+            blended = array("h", pending[-overlap_samples:])
+            for frame in range(frames):
+                alpha = (frame + 1) / (frames + 1)
+                for channel in range(params.nchannels):
+                    offset = frame * params.nchannels + channel
+                    blended[offset] = round(
+                        blended[offset] * (1.0 - alpha) + samples[offset] * alpha
+                    )
+            writer.writeframes(pcm_bytes(blended))
+            pending = samples[overlap_samples:]
+        if pending is not None:
+            writer.writeframes(pcm_bytes(pending))
+
+
+def encode_mp3(source: Path, output: Path, bitrate: str = "64k") -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            ffmpeg_executable(), "-y", "-i", str(source), "-vn",
+            "-ac", "1", "-ar", "24000", "-codec:a", "libmp3lame",
+            "-b:a", bitrate, str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=3600,
+    )
+    if result.returncode or not output.exists() or output.stat().st_size == 0:
+        output.unlink(missing_ok=True)
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "未知错误"
+        raise RuntimeError(f"MP3 编码失败: {detail}")
+
+
+def audio_media_type(output_format: str) -> str:
+    return "audio/mpeg" if output_format == "mp3" else "audio/wav"
 
 
 def write_provenance(path: Path, payload: dict) -> None:

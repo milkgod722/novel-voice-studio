@@ -9,8 +9,6 @@ from pathlib import Path
 class Settings:
     data_dir: Path
     engine: str
-    indextts_path: Path | None
-    model_dir: Path | None
     max_upload_mb: int = 200
     chunk_chars: int = 110
     allow_mock_jobs: bool = False
@@ -19,14 +17,10 @@ class Settings:
     mimo_use_system_proxy: bool = False
     mimo_model: str = "mimo-v2.5-tts-voiceclone"
     mimo_auth_mode: str = "api-key"
-    qwen_model: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-    qwen_device: str = "auto"
 
     @classmethod
     def from_env(cls) -> "Settings":
         root = Path(__file__).resolve().parents[1]
-        path = os.getenv("INDEXTTS_PATH")
-        model = os.getenv("INDEXTTS_MODEL_DIR")
         mimo_api_key = os.getenv("VOICE_CLONE_API_KEY") or os.getenv("MIMO_API_KEY")
         normalized_key = (mimo_api_key or "").strip()
         if normalized_key.lower().startswith("bearer "):
@@ -35,8 +29,6 @@ class Settings:
         return cls(
             data_dir=Path(os.getenv("NVS_DATA_DIR", root / "data")).resolve(),
             engine=engine.lower(),
-            indextts_path=Path(path).resolve() if path else None,
-            model_dir=Path(model).resolve() if model else None,
             max_upload_mb=int(os.getenv("NVS_MAX_UPLOAD_MB", "200")),
             chunk_chars=int(os.getenv("NVS_CHUNK_CHARS", "110")),
             allow_mock_jobs=os.getenv("NVS_ALLOW_MOCK_JOBS", "").lower() in {"1", "true", "yes"},
@@ -58,8 +50,4 @@ class Settings:
                 or os.getenv("MIMO_AUTH_MODE")
                 or "api-key"
             ).strip().lower(),
-            qwen_model=os.getenv(
-                "QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-            ).strip(),
-            qwen_device=os.getenv("QWEN_TTS_DEVICE", "auto").strip().lower(),
         )

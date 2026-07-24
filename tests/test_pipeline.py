@@ -20,6 +20,17 @@ class BlockingSynthesizer(MockSynthesizer):
         super().synthesize(reference, text, emotion, output)
 
 
+class FailOnceSynthesizer(MockSynthesizer):
+    def __init__(self):
+        self.calls = 0
+
+    def synthesize(self, reference, text, emotion, output):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("temporary provider failure")
+        super().synthesize(reference, text, emotion, output)
+
+
 def wav_bytes(seconds=3.2, rate=24000):
     stream = io.BytesIO()
     with wave.open(stream, "wb") as writer:
@@ -34,7 +45,9 @@ def test_complete_audiobook_pipeline(tmp_path: Path):
     try:
         voice = service.add_voice(wav_bytes(), "wechat.wav", "测试者", True)
         book = service.add_book(io.BytesIO("第1章 相遇\n她惊喜地笑了！\n第2章 离别\n他流着泪说再见。".encode()), "novel.txt", "小城")
-        job = service.create_job(voice["id"], book["id"], 0, 1, 0.65)
+        job = service.create_job(
+            voice["id"], book["id"], 0, 1, 0.65, output_format="wav"
+        )
         deadline = time.time() + 10
         while time.time() < deadline:
             job = service.store.load_meta("jobs", job["id"])
@@ -43,6 +56,9 @@ def test_complete_audiobook_pipeline(tmp_path: Path):
         assert job["status"] == "completed", job.get("error")
         output = tmp_path / "jobs" / job["id"] / "audiobook.wav"
         assert output.stat().st_size > 1000
+        assert job["output_format"] == "wav"
+        assert job["output_bytes"] == output.stat().st_size
+        assert not (output.parent / "parts").exists()
         assert (output.parent / "provenance.json").exists()
     finally:
         service.shutdown()
@@ -93,7 +109,7 @@ def test_running_job_can_be_cancelled(tmp_path: Path):
     try:
         voice = service.add_voice(wav_bytes(), "voice.wav", "测试者", True)
         book = service.add_book(io.BytesIO("第1章\n测试内容。".encode()), "book.txt", "测试书")
-        job = service.create_job(voice["id"], book["id"], 0, 0, 0.65, 50)
+        job = service.create_job(voice["id"], book["id"], 0, 0, 0.65, 50, "wav")
         assert synth.started.wait(2)
         cancelled = service.cancel_job(job["id"])
         assert cancelled["cancel_requested"] is True
@@ -120,11 +136,15 @@ def test_running_job_can_be_cancelled(tmp_path: Path):
 
 
 def test_failed_job_resumes_from_cached_parts(tmp_path: Path):
-    service = StudioService(Store(tmp_path), MockSynthesizer(), allow_mock_jobs=True)
+    service = StudioService(
+        Store(tmp_path), FailOnceSynthesizer(), chunk_chars=4, allow_mock_jobs=True
+    )
     try:
         voice = service.add_voice(wav_bytes(), "voice.wav", "测试者", True)
         book = service.add_book(io.BytesIO("第1章\n测试内容。".encode()), "book.txt", "测试书")
-        job = service.create_job(voice["id"], book["id"], 0, 0, 0.65, 50)
+        job = service.create_job(
+            voice["id"], book["id"], 0, 0, 0.65, 50, output_format="wav"
+        )
         deadline = time.time() + 3
         while time.time() < deadline:
             job = service.store.load_meta("jobs", job["id"])
@@ -144,6 +164,8 @@ def test_failed_job_resumes_from_cached_parts(tmp_path: Path):
                 break
             time.sleep(0.03)
         assert resumed["status"] == "completed"
-        assert part.stat().st_mtime_ns == original_mtime
+        assert service.synth.calls == 3
+        assert original_mtime > 0
+        assert not part.parent.exists()
     finally:
         service.shutdown()

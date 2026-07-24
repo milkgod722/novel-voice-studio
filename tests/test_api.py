@@ -5,7 +5,7 @@ import wave
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.main import create_app
+from app.main import JobRequest, create_app
 
 
 def make_wav():
@@ -16,8 +16,13 @@ def make_wav():
     return out.getvalue()
 
 
+def test_job_request_defaults_to_mp3():
+    request = JobRequest(voice_id="voice", book_id="book")
+    assert request.output_format == "mp3"
+
+
 def test_http_end_to_end(tmp_path):
-    app = create_app(Settings(tmp_path, "mock", None, None, allow_mock_jobs=True))
+    app = create_app(Settings(tmp_path, "mock", allow_mock_jobs=True))
     with TestClient(app) as client:
         health = client.get("/api/health").json()
         assert health == {
@@ -37,7 +42,7 @@ def test_http_end_to_end(tmp_path):
         assert reference_text.read_text(encoding="utf-8") == "这是参考语音。"
         book = client.post("/api/books", files={"file": ("book.txt", "第1章\n你好，世界！".encode(), "text/plain")}, data={"title": "测试书"})
         assert book.status_code == 201, book.text
-        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50})
+        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50, "output_format": "wav"})
         assert job.status_code == 202
         assert job.json()["preview_chars"] == 50
         for _ in range(100):
@@ -51,6 +56,7 @@ def test_http_end_to_end(tmp_path):
         download = client.get(f"/api/jobs/{job.json()['id']}/download")
         assert download.status_code == 200
         assert download.headers["content-disposition"].startswith("attachment;")
+        assert ".wav" in download.headers["content-disposition"]
         finished_cancel = client.post(f"/api/jobs/{job.json()['id']}/cancel")
         assert finished_cancel.status_code == 400
         removed = client.delete(f"/api/jobs/{job.json()['id']}")

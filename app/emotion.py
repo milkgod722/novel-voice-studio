@@ -31,3 +31,21 @@ def plan_emotion(text: str, strength: float = 0.65) -> list[float]:
         scores["calm"] = max(0.08, (1.0 - strength) * 0.45)
     total = sum(max(0.0, value) for value in scores.values()) or 1.0
     return [round(max(0.0, scores[name]) / total, 4) for name in EMOTIONS]
+
+
+def plan_emotion_sequence(texts: list[str], strength: float = 0.65) -> list[list[float]]:
+    """Plan a continuous emotion curve instead of resetting at each API call."""
+    raw = [plan_emotion(text, strength) for text in texts]
+    if len(raw) < 2:
+        return raw
+    smoothed: list[list[float]] = []
+    for index, current in enumerate(raw):
+        previous = raw[index - 1] if index else current
+        following = raw[index + 1] if index + 1 < len(raw) else current
+        vector = [
+            previous[position] * 0.15 + current[position] * 0.70 + following[position] * 0.15
+            for position in range(len(EMOTIONS))
+        ]
+        total = sum(vector) or 1.0
+        smoothed.append([round(value / total, 4) for value in vector])
+    return smoothed

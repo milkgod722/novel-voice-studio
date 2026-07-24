@@ -1,4 +1,4 @@
-from app.emotion import EMOTIONS, plan_emotion
+from app.emotion import EMOTIONS, plan_emotion, plan_emotion_sequence
 import zipfile
 
 from app.text import chunk_text, extract_book, split_chapters
@@ -17,6 +17,16 @@ def test_emotion_vector_is_normalized_and_semantic():
     assert len(vector) == 8
     assert abs(sum(vector) - 1) < 0.001
     assert vector[EMOTIONS.index("happy")] > vector[EMOTIONS.index("sad")]
+
+
+def test_emotion_sequence_reduces_abrupt_segment_changes():
+    texts = ["!!", "??", "calm narration."]
+    raw = [plan_emotion(text, 0.9) for text in texts]
+    smoothed = plan_emotion_sequence(texts, 0.9)
+    raw_jump = sum(abs(left - right) for left, right in zip(raw[0], raw[1]))
+    smooth_jump = sum(abs(left - right) for left, right in zip(smoothed[0], smoothed[1]))
+    assert smooth_jump < raw_jump
+    assert all(abs(sum(vector) - 1) < 0.001 for vector in smoothed)
 
 
 def test_epub_uses_declared_spine_order(tmp_path):
