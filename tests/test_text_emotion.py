@@ -1,7 +1,7 @@
 from app.emotion import EMOTIONS, plan_emotion, plan_emotion_sequence
 import zipfile
 
-from app.text import chunk_text, extract_book, split_chapters
+from app.text import chunk_text, extract_book, plan_progressive_segments, split_chapters
 
 
 def test_chapters_and_chunks_preserve_order():
@@ -27,6 +27,31 @@ def test_emotion_sequence_reduces_abrupt_segment_changes():
     smooth_jump = sum(abs(left - right) for left, right in zip(smoothed[0], smoothed[1]))
     assert smooth_jump < raw_jump
     assert all(abs(sum(vector) - 1) < 0.001 for vector in smoothed)
+
+
+def test_progressive_segments_keep_chapter_order_and_split_long_chapters():
+    chapters = [
+        {"index": 0, "title": "第一章", "text": "甲" * 12},
+        {"index": 1, "title": "第二章", "text": "乙" * 4},
+    ]
+    segments = plan_progressive_segments(chapters, chunk_chars=4, segment_chars=8)
+    assert [segment["chapter_index"] for segment in segments] == [0, 0, 1]
+    assert segments[0]["title"] == "第一章 · 1/2"
+    assert "".join(
+        chunk for segment in segments for chunk in segment["chunks"]
+    ) == "甲" * 12 + "乙" * 4
+
+
+def test_half_million_character_book_has_bounded_progressive_plan():
+    text = "甲" * 500_000
+    segments = plan_progressive_segments(
+        [{"index": 0, "title": "长篇", "text": text}],
+        chunk_chars=120,
+        segment_chars=2000,
+    )
+    assert 240 <= len(segments) <= 270
+    assert max(segment["chars"] for segment in segments) <= 2040
+    assert sum(segment["chars"] for segment in segments) == len(text)
 
 
 def test_epub_uses_declared_spine_order(tmp_path):

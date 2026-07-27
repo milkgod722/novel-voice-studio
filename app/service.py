@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-from .audio import concatenate_wavs, encode_mp3, normalize_reference, write_provenance
+from .audio import concatenate_mp3s, concatenate_wavs, encode_mp3, normalize_reference, write_provenance
 from .emotion import plan_emotion_sequence
 from .storage import Store
 from .synth import Synthesizer
-from .text import SUPPORTED_BOOKS, chunk_text, extract_book, split_chapters
+from .text import SUPPORTED_BOOKS, extract_book, plan_progressive_segments, split_chapters
 
 
 def now_iso() -> str:
@@ -29,11 +29,13 @@ class StudioService:
         max_upload_mb: int = 200,
         chunk_chars: int = 110,
         allow_mock_jobs: bool = False,
+        segment_chars: int = 2000,
     ):
         self.store = store
         self.synth = synth
         self.max_upload_bytes = max_upload_mb * 1024 * 1024
         self.chunk_chars = chunk_chars
+        self.segment_chars = max(chunk_chars, segment_chars)
         self.allow_mock_jobs = allow_mock_jobs
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvs-render")
         self._mark_interrupted_jobs()
@@ -74,7 +76,7 @@ class StudioService:
         if meta["status"] == "queued":
             meta.update(status="cancelled", stage="已取消", completed_at=now_iso())
         else:
-            meta["stage"] = "正在取消：等待当前 MiMo 请求返回"
+            meta["stage"] = "正在取消：等待当前语音请求返回"
         self._save_job(meta)
         return meta
 
@@ -132,24 +134,28 @@ class StudioService:
             raise ValueError("必须确认已取得声音本人明确授权")
         item_id = self.store.new_id()
         folder = self.store.directory("voices", item_id)
-        raw = folder / ("source" + Path(filename or "voice.wav").suffix.lower())
-        self._copy_limited(source, raw)
-        info = normalize_reference(raw, folder / "reference.wav")
-        normalized_transcript = " ".join(transcript.split())
-        if len(normalized_transcript) > 2000:
-            raise ValueError("参考语音文字不能超过 2000 个字符")
-        (folder / "reference.txt").write_text(normalized_transcript, encoding="utf-8")
-        meta = {
-            "id": item_id,
-            "name": name.strip() or "我的声音",
-            "filename": filename,
-            "consent": True,
-            "transcript_chars": len(normalized_transcript),
-            "created_at": now_iso(),
-            **info,
-        }
-        self.store.save_meta("voices", item_id, meta)
-        return meta
+        try:
+            raw = folder / ("source" + Path(filename or "voice.wav").suffix.lower())
+            self._copy_limited(source, raw)
+            info = normalize_reference(raw, folder / "reference.wav")
+            normalized_transcript = " ".join(transcript.split())
+            if len(normalized_transcript) > 2000:
+                raise ValueError("参考语音文字不能超过 2000 个字符")
+            (folder / "reference.txt").write_text(normalized_transcript, encoding="utf-8")
+            meta = {
+                "id": item_id,
+                "name": name.strip() or "我的声音",
+                "filename": filename,
+                "consent": True,
+                "transcript_chars": len(normalized_transcript),
+                "created_at": now_iso(),
+                **info,
+            }
+            self.store.save_meta("voices", item_id, meta)
+            return meta
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
 
     def add_book(self, source: BinaryIO, filename: str, title: str) -> dict:
         suffix = Path(filename or "book.txt").suffix.lower()
@@ -157,21 +163,25 @@ class StudioService:
             raise ValueError("仅支持 TXT、Markdown 和 EPUB 小说")
         item_id = self.store.new_id()
         folder = self.store.directory("books", item_id)
-        raw = folder / ("source" + suffix)
-        self._copy_limited(source, raw)
-        text = extract_book(raw)
-        if not text:
-            raise ValueError("小说正文为空")
-        (folder / "book.txt").write_text(text, encoding="utf-8")
-        chapters = split_chapters(text)
-        meta = {
-            "id": item_id, "title": title.strip() or Path(filename).stem, "filename": filename,
-            "chars": len(text), "chapter_count": len(chapters),
-            "chapters": [{"index": c["index"], "title": c["title"], "chars": len(str(c["text"]))} for c in chapters],
-            "created_at": now_iso(),
-        }
-        self.store.save_meta("books", item_id, meta)
-        return meta
+        try:
+            raw = folder / ("source" + suffix)
+            self._copy_limited(source, raw)
+            text = extract_book(raw)
+            if not text:
+                raise ValueError("小说正文为空")
+            (folder / "book.txt").write_text(text, encoding="utf-8")
+            chapters = split_chapters(text)
+            meta = {
+                "id": item_id, "title": title.strip() or Path(filename).stem, "filename": filename,
+                "chars": len(text), "chapter_count": len(chapters),
+                "chapters": [{"index": c["index"], "title": c["title"], "chars": len(str(c["text"]))} for c in chapters],
+                "created_at": now_iso(),
+            }
+            self.store.save_meta("books", item_id, meta)
+            return meta
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
 
     def create_job(
         self,
@@ -182,6 +192,7 @@ class StudioService:
         emotion_strength: float,
         preview_chars: int | None = None,
         output_format: str = "mp3",
+        segment_chars: int | None = None,
     ) -> dict:
         if self.synth.name == "mock" and not self.allow_mock_jobs:
             raise ValueError("当前是演示引擎，不能生成真实语音。请先配置一个远程 TTS API")
@@ -192,6 +203,10 @@ class StudioService:
         if chapter_start < 0 or end < chapter_start or end >= count:
             raise ValueError("章节范围无效")
         normalized_strength = max(0.0, min(1.0, emotion_strength))
+        normalized_segment_chars = max(
+            self.chunk_chars,
+            self.segment_chars if segment_chars is None else int(segment_chars),
+        )
         if output_format not in {"mp3", "wav"}:
             raise ValueError("成品格式仅支持 MP3 或 WAV")
         for active in self.store.list_meta("jobs"):
@@ -205,14 +220,18 @@ class StudioService:
                 and active.get("preview_chars") == preview_chars
                 and active.get("emotion_strength") == normalized_strength
                 and active.get("output_format", "mp3") == output_format
+                and int(active.get("segment_chars", self.segment_chars))
+                == normalized_segment_chars
             )
             if same_request:
                 raise ValueError("相同的任务已经在生成或排队，请勿重复提交")
         job_id = self.store.new_id()
         meta = {
             "id": job_id, "voice_id": voice["id"], "book_id": book["id"], "chapter_start": chapter_start,
+            "book_title": book["title"], "voice_name": voice["name"],
             "chapter_end": end, "emotion_strength": normalized_strength,
             "preview_chars": preview_chars, "output_format": output_format,
+            "progressive": True, "segment_chars": normalized_segment_chars, "segments": [],
             "engine": self.synth.name, "status": "queued",
             "stage": "等待生成线程", "progress": 0, "created_at": now_iso(), "error": None,
         }
@@ -241,53 +260,123 @@ class StudioService:
             chunk_limit = self.synth.preferred_chunk_chars or self.chunk_chars
             if meta.get("preview_chars"):
                 preview_text = "\n".join(str(chapter["text"]) for chapter in selected)[: int(meta["preview_chars"])]
-                chunks = chunk_text(preview_text, chunk_limit)
+                source_segments = [{
+                    "index": meta["chapter_start"],
+                    "title": "试听样片",
+                    "text": preview_text,
+                }]
+                segment_plan = plan_progressive_segments(
+                    source_segments, chunk_limit, max(self.segment_chars, len(preview_text))
+                )
             else:
-                chunks = [chunk for chapter in selected for chunk in chunk_text(str(chapter["text"]), chunk_limit)]
-            if not chunks:
+                segment_plan = plan_progressive_segments(
+                    selected, chunk_limit, int(meta.get("segment_chars", self.segment_chars))
+                )
+            chunks = [
+                text
+                for segment in segment_plan
+                for text in segment["chunks"]
+            ]
+            if not chunks or not segment_plan:
                 raise ValueError("所选章节没有可朗读内容")
             emotions = plan_emotion_sequence(chunks, meta["emotion_strength"])
-            parts: list[Path] = []
             manifest = []
-            for index, (text, emotion) in enumerate(zip(chunks, emotions)):
-                self._raise_if_cancelled(job_id, meta)
-                part = folder / "parts" / f"{index:05d}.wav"
-                if not part.exists():
-                    if self.synth.provider in {"voice-clone", "remote-api"}:
-                        meta["stage"] = f"正在等待语音克隆 API 返回第 {index + 1}/{len(chunks)} 段"
-                    else:
-                        meta["stage"] = f"正在生成第 {index + 1}/{len(chunks)} 段"
-                    self._save_job(meta)
-                    self.synth.synthesize(voice_dir / "reference.wav", text, emotion, part)
-                    self._raise_if_cancelled(job_id, meta)
-                parts.append(part)
-                manifest.append({"index": index, "text": text, "emotion": emotion, "file": part.name})
-                meta["progress"] = int((index + 1) * 95 / len(chunks))
-                meta["stage"] = f"已完成 {index + 1}/{len(chunks)} 段"
-                self._save_job(meta)
-            meta["stage"] = "正在合并音频"
-            self._save_job(meta)
-            combined_wav = folder / "audiobook.wav"
-            concatenate_wavs(parts, combined_wav, crossfade_ms=40)
             output_format = meta.get("output_format", "mp3")
+            ready = {
+                int(segment["index"]): segment
+                for segment in meta.get("segments", [])
+                if (folder / str(segment.get("output", ""))).exists()
+            }
+            segment_outputs: list[Path] = []
+            chunk_index = 0
+            for segment_index, segment in enumerate(segment_plan):
+                segment_dir = folder / "segments"
+                segment_output = segment_dir / f"{segment_index:04d}.{output_format}"
+                segment_parts: list[Path] = []
+                segment_cache_parts: list[Path] = []
+                for text in segment["chunks"]:
+                    emotion = emotions[chunk_index]
+                    self._raise_if_cancelled(job_id, meta)
+                    part = folder / "parts" / f"{chunk_index:05d}.wav"
+                    if not segment_output.exists() and not part.exists():
+                        if self.synth.provider in {"voice-clone", "remote-api"}:
+                            meta["stage"] = (
+                                f"正在生成可播放分段 {segment_index + 1}/{len(segment_plan)}"
+                                f" · API 片段 {chunk_index + 1}/{len(chunks)}"
+                            )
+                        else:
+                            meta["stage"] = (
+                                f"正在生成可播放分段 {segment_index + 1}/{len(segment_plan)}"
+                                f" · 音频片段 {chunk_index + 1}/{len(chunks)}"
+                            )
+                        self._save_job(meta)
+                        self.synth.synthesize(voice_dir / "reference.wav", text, emotion, part)
+                        self._raise_if_cancelled(job_id, meta)
+                    if not segment_output.exists():
+                        segment_parts.append(part)
+                    segment_cache_parts.append(part)
+                    manifest.append({
+                        "index": chunk_index,
+                        "segment_index": segment_index,
+                        "text": text,
+                        "emotion": emotion,
+                        "file": part.name,
+                    })
+                    chunk_index += 1
+                    meta["progress"] = int(chunk_index * 95 / len(chunks))
+                    self._save_job(meta)
+
+                if not segment_output.exists():
+                    meta["stage"] = f"正在发布可播放分段 {segment_index + 1}/{len(segment_plan)}"
+                    self._save_job(meta)
+                    if output_format == "mp3":
+                        segment_wav = segment_dir / f".{segment_index:04d}.wav"
+                        concatenate_wavs(segment_parts, segment_wav, crossfade_ms=40)
+                        encode_mp3(segment_wav, segment_output)
+                        segment_wav.unlink(missing_ok=True)
+                    else:
+                        concatenate_wavs(segment_parts, segment_output, crossfade_ms=40)
+                entry = {
+                    "index": segment_index,
+                    "title": segment["title"],
+                    "chapter_index": segment["chapter_index"],
+                    "chars": segment["chars"],
+                    "output": segment_output.relative_to(folder).as_posix(),
+                    "output_format": output_format,
+                    "output_bytes": segment_output.stat().st_size,
+                    "ready": True,
+                }
+                ready[segment_index] = entry
+                segment_outputs.append(segment_output)
+                meta["segments"] = [ready[index] for index in sorted(ready)]
+                meta["ready_segments"] = len(meta["segments"])
+                meta["total_segments"] = len(segment_plan)
+                meta["stage"] = (
+                    f"已有 {len(meta['segments'])}/{len(segment_plan)} 个分段可播放"
+                )
+                self._save_job(meta)
+                for part in segment_cache_parts:
+                    part.unlink(missing_ok=True)
+
+            meta["stage"] = "正在快速合并完整成品"
+            self._save_job(meta)
             output = folder / f"audiobook.{output_format}"
             if output_format == "mp3":
-                meta["stage"] = "正在压缩 MP3 成品"
-                self._save_job(meta)
-                encode_mp3(combined_wav, output)
-                combined_wav.unlink(missing_ok=True)
+                concatenate_mp3s(segment_outputs, output)
+            else:
+                concatenate_wavs(segment_outputs, output, crossfade_ms=40)
             write_provenance(folder / "provenance.json", {
                 "generated_at": now_iso(), "synthetic_audio": True, "consent_confirmed": True,
                 "engine": self.synth.name, "voice_id": meta["voice_id"], "book_id": meta["book_id"],
                 "output_format": output_format,
                 "continuity": {"emotion_smoothing": "15/70/15", "crossfade_ms": 40},
-                "segments": manifest,
+                "progressive_segments": meta["segments"], "chunks": manifest,
             })
             meta.update(
                 status="completed", stage="可以在线播放", progress=100,
                 completed_at=now_iso(), output=output.name,
                 output_format=output_format, output_bytes=output.stat().st_size,
-                render_version=2,
+                render_version=3,
             )
             try:
                 shutil.rmtree(folder / "parts")

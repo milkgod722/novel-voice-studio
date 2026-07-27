@@ -11,6 +11,7 @@ class Settings:
     engine: str
     max_upload_mb: int = 200
     chunk_chars: int = 110
+    segment_chars: int = 2000
     allow_mock_jobs: bool = False
     mimo_api_key: str | None = None
     mimo_base_url: str = "https://api.xiaomimimo.com/v1"
@@ -31,6 +32,7 @@ class Settings:
             engine=engine.lower(),
             max_upload_mb=int(os.getenv("NVS_MAX_UPLOAD_MB", "200")),
             chunk_chars=int(os.getenv("NVS_CHUNK_CHARS", "110")),
+            segment_chars=int(os.getenv("NVS_SEGMENT_CHARS", "2000")),
             allow_mock_jobs=os.getenv("NVS_ALLOW_MOCK_JOBS", "").lower() in {"1", "true", "yes"},
             mimo_api_key=mimo_api_key,
             mimo_base_url=(

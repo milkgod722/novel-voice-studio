@@ -30,6 +30,7 @@ class JobRequest(BaseModel):
     emotion_strength: float = Field(default=0.65, ge=0, le=1)
     preview_chars: int | None = Field(default=None, ge=50, le=2000)
     output_format: Literal["mp3", "wav"] = "mp3"
+    segment_chars: int = Field(default=2000, ge=500, le=10000)
 
 
 class VoiceCloneConfigRequest(BaseModel):
@@ -78,6 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.mimo_auth_mode,
         ),
         settings.max_upload_mb, settings.chunk_chars, settings.allow_mock_jobs,
+        settings.segment_chars,
     )
 
     @asynccontextmanager
@@ -221,6 +223,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return Response(status_code=204)
         except (KeyError, ValueError) as exc:
             raise api_error(exc) from exc
+
+    def ready_segment(job_id: str, segment_index: int) -> tuple[dict, Path]:
+        try:
+            job = service.store.load_meta("jobs", job_id)
+        except KeyError as exc:
+            raise api_error(exc) from exc
+        segment = next(
+            (
+                item
+                for item in job.get("segments", [])
+                if int(item.get("index", -1)) == segment_index and item.get("ready")
+            ),
+            None,
+        )
+        if segment is None:
+            raise HTTPException(status_code=404, detail="该分段尚未生成完成")
+        relative = Path(str(segment["output"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise HTTPException(status_code=500, detail="分段音频路径无效")
+        path = service.store.directory("jobs", job_id) / relative
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="分段音频文件不存在")
+        return segment, path
+
+    @app.get("/api/jobs/{job_id}/segments/{segment_index}/audio")
+    def get_segment_audio(job_id: str, segment_index: int):
+        segment, path = ready_segment(job_id, segment_index)
+        return FileResponse(
+            path,
+            media_type=audio_media_type(segment.get("output_format", "mp3")),
+        )
+
+    @app.get("/api/jobs/{job_id}/segments/{segment_index}/download")
+    def download_segment_audio(job_id: str, segment_index: int):
+        segment, path = ready_segment(job_id, segment_index)
+        output_format = segment.get("output_format", "mp3")
+        return FileResponse(
+            path,
+            media_type=audio_media_type(output_format),
+            filename=f"novel-{job_id}-segment-{segment_index + 1}.{output_format}",
+        )
 
     @app.get("/api/jobs/{job_id}/audio")
     def get_audio(job_id: str):

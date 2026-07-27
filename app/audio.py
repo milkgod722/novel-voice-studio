@@ -133,6 +133,37 @@ def encode_mp3(source: Path, output: Path, bitrate: str = "64k") -> None:
         raise RuntimeError(f"MP3 编码失败: {detail}")
 
 
+def concatenate_mp3s(parts: list[Path], output: Path) -> None:
+    if not parts:
+        raise ValueError("没有可拼接的 MP3 片段")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if len(parts) == 1:
+        shutil.copyfile(parts[0], output)
+        return
+    playlist = output.with_suffix(".concat.txt")
+    lines = []
+    for part in parts:
+        escaped = part.resolve().as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+    playlist.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg_executable(), "-y", "-f", "concat", "-safe", "0",
+                "-i", str(playlist), "-c", "copy", str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+    finally:
+        playlist.unlink(missing_ok=True)
+    if result.returncode or not output.exists() or output.stat().st_size == 0:
+        output.unlink(missing_ok=True)
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "未知错误"
+        raise RuntimeError(f"MP3 分段合并失败: {detail}")
+
+
 def audio_media_type(output_format: str) -> str:
     return "audio/mpeg" if output_format == "mp3" else "audio/wav"
 

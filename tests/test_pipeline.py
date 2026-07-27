@@ -31,6 +31,20 @@ class FailOnceSynthesizer(MockSynthesizer):
         super().synthesize(reference, text, emotion, output)
 
 
+class BlockOnSecondSynthesizer(MockSynthesizer):
+    def __init__(self):
+        self.calls = 0
+        self.second_started = threading.Event()
+        self.release = threading.Event()
+
+    def synthesize(self, reference, text, emotion, output):
+        self.calls += 1
+        if self.calls == 2:
+            self.second_started.set()
+            assert self.release.wait(5), "second segment was not released"
+        super().synthesize(reference, text, emotion, output)
+
+
 def wav_bytes(seconds=3.2, rate=24000):
     stream = io.BytesIO()
     with wave.open(stream, "wb") as writer:
@@ -58,10 +72,49 @@ def test_complete_audiobook_pipeline(tmp_path: Path):
         assert output.stat().st_size > 1000
         assert job["output_format"] == "wav"
         assert job["output_bytes"] == output.stat().st_size
+        assert len(job["segments"]) == 2
+        assert all(
+            (output.parent / segment["output"]).exists()
+            for segment in job["segments"]
+        )
         assert not (output.parent / "parts").exists()
         assert (output.parent / "provenance.json").exists()
     finally:
         service.shutdown()
+
+
+def test_first_chapter_is_playable_while_later_segment_is_still_running(tmp_path: Path):
+    synth = BlockOnSecondSynthesizer()
+    service = StudioService(
+        Store(tmp_path),
+        synth,
+        chunk_chars=20,
+        segment_chars=20,
+        allow_mock_jobs=True,
+    )
+    try:
+        voice = service.add_voice(wav_bytes(), "voice.wav", "测试者", True)
+        book = service.add_book(
+            io.BytesIO("第一章\n第一段。\n第二章\n第二段。".encode()),
+            "book.txt",
+            "分段测试",
+        )
+        job = service.create_job(
+            voice["id"], book["id"], 0, 1, 0.65, output_format="wav"
+        )
+        assert synth.second_started.wait(3)
+        running = service.store.load_meta("jobs", job["id"])
+        assert running["status"] == "running"
+        assert running["ready_segments"] == 1
+        assert running["total_segments"] == 2
+        first = tmp_path / "jobs" / job["id"] / running["segments"][0]["output"]
+        assert first.exists()
+        assert not (first.parent.parent / "parts" / "00000.wav").exists()
+        synth.release.set()
+    finally:
+        synth.release.set()
+        service.shutdown()
+
 
 def test_voice_requires_consent(tmp_path: Path):
     service = StudioService(Store(tmp_path), MockSynthesizer())
@@ -167,5 +220,51 @@ def test_failed_job_resumes_from_cached_parts(tmp_path: Path):
         assert service.synth.calls == 3
         assert original_mtime > 0
         assert not part.parent.exists()
+    finally:
+        service.shutdown()
+
+
+def test_retry_skips_already_published_segments(tmp_path: Path):
+    synth = FailOnceSynthesizer()
+    service = StudioService(
+        Store(tmp_path),
+        synth,
+        chunk_chars=20,
+        segment_chars=20,
+        allow_mock_jobs=True,
+    )
+    try:
+        voice = service.add_voice(wav_bytes(), "voice.wav", "测试者", True)
+        book = service.add_book(
+            io.BytesIO("第一章\n第一段。\n第二章\n第二段。".encode()),
+            "book.txt",
+            "断点测试",
+        )
+        job = service.create_job(
+            voice["id"], book["id"], 0, 1, 0.65, output_format="wav"
+        )
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            failed = service.store.load_meta("jobs", job["id"])
+            if failed["status"] == "failed":
+                break
+            time.sleep(0.03)
+        assert failed["status"] == "failed"
+        assert failed["ready_segments"] == 1
+        assert synth.calls == 2
+        first_output = (
+            tmp_path / "jobs" / job["id"] / failed["segments"][0]["output"]
+        )
+        first_mtime = first_output.stat().st_mtime_ns
+        service.retry_job(job["id"])
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            resumed = service.store.load_meta("jobs", job["id"])
+            if resumed["status"] == "completed":
+                break
+            time.sleep(0.03)
+        assert resumed["status"] == "completed", resumed.get("error")
+        assert synth.calls == 3
+        assert first_output.stat().st_mtime_ns == first_mtime
     finally:
         service.shutdown()

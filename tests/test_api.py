@@ -19,11 +19,66 @@ def make_wav():
 def test_job_request_defaults_to_mp3():
     request = JobRequest(voice_id="voice", book_id="book")
     assert request.output_format == "mp3"
+    assert request.segment_chars == 2000
+
+
+def test_job_request_rejects_unsafe_segment_sizes():
+    for value in (499, 10001):
+        try:
+            JobRequest(voice_id="voice", book_id="book", segment_chars=value)
+            assert False, f"expected validation error for {value}"
+        except ValueError:
+            pass
+
+
+def test_failed_uploads_leave_no_orphan_directories(tmp_path):
+    app = create_app(Settings(tmp_path, "mock", max_upload_mb=1, allow_mock_jobs=True))
+    with TestClient(app) as client:
+        invalid_voice = client.post(
+            "/api/voices",
+            files={"file": ("broken.wav", b"not-a-wave", "audio/wav")},
+            data={"name": "坏音频", "consent": "true"},
+        )
+        assert invalid_voice.status_code == 400
+        assert not any((tmp_path / "voices").iterdir())
+
+        oversized_voice = client.post(
+            "/api/voices",
+            files={"file": ("large.wav", b"0" * (1024 * 1024 + 1), "audio/wav")},
+            data={"name": "超大音频", "consent": "true"},
+        )
+        assert oversized_voice.status_code == 400
+        assert "上传文件过大" in oversized_voice.json()["detail"]
+        assert not any((tmp_path / "voices").iterdir())
+
+        empty_book = client.post(
+            "/api/books",
+            files={"file": ("empty.txt", b"", "text/plain")},
+        )
+        assert empty_book.status_code == 400
+        assert not any((tmp_path / "books").iterdir())
+
+        oversized_book = client.post(
+            "/api/books",
+            files={"file": ("large.txt", b"0" * (1024 * 1024 + 1), "text/plain")},
+        )
+        assert oversized_book.status_code == 400
+        assert "上传文件过大" in oversized_book.json()["detail"]
+        assert not any((tmp_path / "books").iterdir())
 
 
 def test_http_end_to_end(tmp_path):
     app = create_app(Settings(tmp_path, "mock", allow_mock_jobs=True))
     with TestClient(app) as client:
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "创作设置" in page.text
+        assert "生成参数" in page.text
+        assert "作品与进度" in page.text
+        assert "请先上传参考声音" in page.text
+        assert 'data-open-panel="book-upload-panel"' in page.text
+        assert "语音引擎设置" in page.text
+        assert "/app.js?v=9" in page.text
         health = client.get("/api/health").json()
         assert health == {
             "status": "ok",
@@ -42,9 +97,12 @@ def test_http_end_to_end(tmp_path):
         assert reference_text.read_text(encoding="utf-8") == "这是参考语音。"
         book = client.post("/api/books", files={"file": ("book.txt", "第1章\n你好，世界！".encode(), "text/plain")}, data={"title": "测试书"})
         assert book.status_code == 201, book.text
-        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50, "output_format": "wav"})
+        job = client.post("/api/jobs", json={"voice_id": voice.json()["id"], "book_id": book.json()["id"], "chapter_start": 0, "preview_chars": 50, "output_format": "wav", "segment_chars": 1000})
         assert job.status_code == 202
         assert job.json()["preview_chars"] == 50
+        assert job.json()["book_title"] == "测试书"
+        assert job.json()["voice_name"] == "我"
+        assert job.json()["segment_chars"] == 1000
         for _ in range(100):
             state = client.get(f"/api/jobs/{job.json()['id']}").json()
             if state["status"] == "completed": break
@@ -57,6 +115,17 @@ def test_http_end_to_end(tmp_path):
         assert download.status_code == 200
         assert download.headers["content-disposition"].startswith("attachment;")
         assert ".wav" in download.headers["content-disposition"]
+        assert state["ready_segments"] == 1
+        segment_audio = client.get(
+            f"/api/jobs/{job.json()['id']}/segments/0/audio"
+        )
+        assert segment_audio.status_code == 200
+        assert segment_audio.headers["content-type"] == "audio/wav"
+        segment_download = client.get(
+            f"/api/jobs/{job.json()['id']}/segments/0/download"
+        )
+        assert segment_download.status_code == 200
+        assert "segment-1.wav" in segment_download.headers["content-disposition"]
         finished_cancel = client.post(f"/api/jobs/{job.json()['id']}/cancel")
         assert finished_cancel.status_code == 400
         removed = client.delete(f"/api/jobs/{job.json()['id']}")

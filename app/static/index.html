@@ -1,17 +1,225 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>小说声工坊</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/status.css"><link rel="stylesheet" href="/provider.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f5f1e8">
+  <title>小说声工坊</title>
+  <link rel="stylesheet" href="/styles.css?v=9">
+  <link rel="stylesheet" href="/status.css?v=9">
+  <link rel="stylesheet" href="/provider.css?v=9">
 </head>
 <body>
-  <main>
-    <header><span class="eyebrow">REMOTE · EXPRESSIVE · CONSENT FIRST</span><h1>让你的声音，<br><i>住进一本书。</i></h1><p>导入一段日常语音与小说，自动逐句判断情绪，通过你选择的远程语音服务生成个人有声书。</p><div class="engine-area"><div id="engine" class="engine">正在连接引擎…</div><form id="voiceclone-form" class="mimo-config"><label>语音服务<select name="protocol"><option value="mimo-chat">小米 MiMo（默认）</option><option value="aliyun-cosyvoice">阿里云 CosyVoice</option><option value="tencent-tts">腾讯云语音合成</option><option value="baidu-voice-clone">百度智能云声音复刻</option><option value="google-cloud-tts">Google Cloud Text-to-Speech</option><option value="openai-tts">OpenAI TTS</option><option value="indextts-url">IndexTTS HTTP URL</option></select></label><label data-provider-field="api_url">API URL<input name="api_url" type="url" value="https://api.xiaomimimo.com/v1/chat/completions" placeholder="https://example.com/tts" required></label><label data-provider-field="model">模型名称<input name="model" value="mimo-v2.5-tts-voiceclone" maxlength="512" pattern="[A-Za-z0-9][A-Za-z0-9._:/\\-]{0,511}" required></label><label data-provider-field="voice_id" hidden><span id="voice-id-label">音色 ID / Voice Key</span><textarea name="voice_id" rows="2" maxlength="16384" placeholder="填写已创建的自定义音色 ID"></textarea></label><label data-provider-field="project_id" hidden>Project ID<input name="project_id" maxlength="256" placeholder="Google Cloud Project ID"></label><label data-provider-field="language" hidden>语言代码<input name="language" value="zh-CN" maxlength="32" placeholder="zh-CN"></label><label data-provider-field="auth_mode">鉴权方式<select name="auth_mode"><option value="api-key">api-key 请求头</option><option value="bearer">Authorization: Bearer</option></select></label><label data-provider-field="api_key"><span id="api-key-label">API Key（仅保存在当前进程内）</span><input name="api_key" type="password" autocomplete="off" placeholder="粘贴后不会写入磁盘" required></label><label data-provider-field="api_secret" hidden>SecretKey<input name="api_secret" type="password" autocomplete="off" placeholder="腾讯云 SecretKey"></label><button>应用远程语音配置</button><small id="voiceclone-help">小米 MiMo 可直接随请求使用上传的参考音频，并接收情感演播指令。</small></form></div></header>
-    <section class="steps">
-      <article><b>01</b><h2>留下声音</h2><p>建议上传 10–30 秒安静环境中的微信语音。MiMo 与 IndexTTS URL 会直接使用它；其他厂商需先创建音色 ID。</p><form id="voice-form"><label>声音名称<input name="name" value="我的声音"></label><label class="drop">选择语音文件<input name="file" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" required></label><label>参考语音文字（可选）<textarea name="transcript" rows="3" maxlength="2000" placeholder="逐字填写这段语音说了什么，便于需要文本的音色注册流程"></textarea></label><label class="consent"><input name="consent" type="checkbox" required> 我确认已获得声音本人的明确授权，仅用于合法用途</label><button>保存声音</button></form></article>
-      <article><b>02</b><h2>放入小说</h2><p>支持 TXT、Markdown、EPUB，自动识别中文编码与章节。</p><form id="book-form"><label>书名（可选）<input name="title" placeholder="留空则使用文件名"></label><label class="drop">选择小说文件<input name="file" type="file" accept=".txt,.md,.epub" required></label><button>导入小说</button></form></article>
-      <article><b>03</b><h2>开始演绎</h2><p>为叙述保持克制，为对白增加情绪；建议先生成前 300 字试听样片。</p><form id="job-form"><label>声音<select name="voice_id" required></select></label><label>小说<select name="book_id" required></select></label><div class="range"><label>起始章<input name="chapter_start" type="number" min="1" value="1"></label><label>结束章<input name="chapter_end" type="number" min="1" placeholder="末章"></label></div><label>情感强度 <output id="strength-value">65%</output><input name="emotion_strength" type="range" min="0" max="1" step="0.05" value="0.65"></label><label>成品格式<select name="output_format"><option value="mp3" selected>MP3（推荐，体积小）</option><option value="wav">WAV（无损，体积大）</option></select></label><div class="job-actions"><button class="generate-button" name="mode" value="preview">生成试听样片</button><button class="generate-button secondary" name="mode" value="full">生成完整范围</button></div><small id="job-hint" class="job-hint">默认生成 64 kbps MP3；分片会自动平滑情绪并交叉淡化衔接。</small></form></article>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand" aria-label="小说声工坊">
+        <span class="brand-mark" aria-hidden="true">声</span>
+        <div>
+          <p class="brand-name">小说声工坊</p>
+          <small class="brand-meta">VOICE · STORY · STUDIO</small>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="engine" class="engine" role="status" aria-live="polite">正在连接引擎…</div>
+        <details id="provider-panel" class="provider-panel">
+          <summary>语音引擎设置</summary>
+          <form id="voiceclone-form" class="mimo-config">
+            <label>语音服务
+              <select name="protocol">
+                <option value="mimo-chat">小米 MiMo（默认）</option>
+                <option value="aliyun-cosyvoice">阿里云 CosyVoice</option>
+                <option value="tencent-tts">腾讯云语音合成</option>
+                <option value="baidu-voice-clone">百度智能云声音复刻</option>
+                <option value="google-cloud-tts">Google Cloud Text-to-Speech</option>
+                <option value="openai-tts">OpenAI TTS</option>
+                <option value="indextts-url">IndexTTS HTTP URL</option>
+              </select>
+            </label>
+            <label data-provider-field="api_url">API URL
+              <input name="api_url" type="url" value="https://api.xiaomimimo.com/v1/chat/completions" placeholder="https://example.com/tts" required>
+            </label>
+            <label data-provider-field="model">模型名称
+              <input name="model" value="mimo-v2.5-tts-voiceclone" maxlength="512" pattern="[A-Za-z0-9][A-Za-z0-9._:/\\-]{0,511}" required>
+            </label>
+            <label data-provider-field="voice_id" hidden>
+              <span id="voice-id-label">音色 ID / Voice Key</span>
+              <textarea name="voice_id" rows="2" maxlength="16384" placeholder="填写已创建的自定义音色 ID"></textarea>
+            </label>
+            <label data-provider-field="project_id" hidden>Project ID
+              <input name="project_id" maxlength="256" placeholder="Google Cloud Project ID">
+            </label>
+            <label data-provider-field="language" hidden>语言代码
+              <input name="language" value="zh-CN" maxlength="32" placeholder="zh-CN">
+            </label>
+            <label data-provider-field="auth_mode">鉴权方式
+              <select name="auth_mode">
+                <option value="api-key">api-key 请求头</option>
+                <option value="bearer">Authorization: Bearer</option>
+              </select>
+            </label>
+            <label data-provider-field="api_key">
+              <span id="api-key-label">API Key（仅保存在当前进程内）</span>
+              <input name="api_key" type="password" autocomplete="off" placeholder="粘贴后不会写入磁盘" required>
+            </label>
+            <label data-provider-field="api_secret" hidden>SecretKey
+              <input name="api_secret" type="password" autocomplete="off" placeholder="腾讯云 SecretKey">
+            </label>
+            <button>应用语音引擎配置</button>
+            <small id="voiceclone-help">小米 MiMo 可直接使用上传的参考音频，并接收情感演播指令。</small>
+          </form>
+        </details>
+      </div>
+    </header>
+
+    <section id="studio-workspace" class="studio-workspace" aria-labelledby="studio-title">
+      <div class="workspace-heading">
+        <div>
+          <span class="eyebrow">01 / 03 · Setup</span>
+          <h1 id="studio-title">创作设置</h1>
+          <p>依次配置语音模型、参考声音和小说文本。</p>
+        </div>
+        <span id="setup-state" class="workspace-state">正在检查配置…</span>
+      </div>
+
+      <div class="setup-list">
+        <section id="model-resource" class="resource-picker">
+          <div class="resource-title">
+            <span>01</span>
+            <div>
+              <h3>语音模型</h3>
+              <small id="model-state">正在检查引擎</small>
+            </div>
+          </div>
+          <div class="resource-value">
+            <span>当前引擎</span>
+            <strong id="model-value">尚未配置</strong>
+          </div>
+          <button type="button" class="inline-action" data-open-provider>配置模型</button>
+        </section>
+
+        <section id="voice-resource" class="resource-picker">
+          <div class="resource-title">
+            <span>02</span>
+            <div>
+              <h3>参考声音</h3>
+              <small id="voice-state">还没有保存声音</small>
+            </div>
+          </div>
+          <label>选择声音
+            <select id="voice-select" name="voice_id" data-empty-label="请先上传参考声音" required></select>
+          </label>
+          <button type="button" class="inline-action" data-open-panel="voice-upload-panel">上传声音</button>
+        </section>
+
+        <section id="book-resource" class="resource-picker">
+          <div class="resource-title">
+            <span>03</span>
+            <div>
+              <h3>小说文本</h3>
+              <small id="book-state">还没有导入小说</small>
+            </div>
+          </div>
+          <label>选择小说
+            <select id="book-select" name="book_id" data-empty-label="请先导入小说" required></select>
+          </label>
+          <button type="button" class="inline-action" data-open-panel="book-upload-panel">导入小说</button>
+        </section>
+      </div>
+
+      <div class="upload-panels">
+        <details id="voice-upload-panel" class="upload-panel">
+          <summary>上传新的参考声音 <small>10–30 秒安静环境录音</small></summary>
+          <form id="voice-form">
+            <label>声音名称
+              <input name="name" value="我的声音">
+            </label>
+            <label class="drop">选择语音文件
+              <input name="file" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.webm" required>
+            </label>
+            <label>参考语音文字（可选）
+              <textarea name="transcript" rows="3" maxlength="2000" placeholder="逐字填写录音内容，可提高部分服务的音色注册效果"></textarea>
+            </label>
+            <label class="consent">
+              <input name="consent" type="checkbox" required>
+              <span>我确认已获得声音本人的明确授权，仅用于合法用途</span>
+            </label>
+            <button>保存并选中声音</button>
+          </form>
+        </details>
+
+        <details id="book-upload-panel" class="upload-panel">
+          <summary>导入新的小说 <small>支持 TXT、Markdown、EPUB</small></summary>
+          <form id="book-form">
+            <label>书名（可选）
+              <input name="title" placeholder="留空则使用文件名">
+            </label>
+            <label class="drop">选择小说文件
+              <input name="file" type="file" accept=".txt,.md,.epub" required>
+            </label>
+            <button>导入并选中小说</button>
+          </form>
+        </details>
+      </div>
+
     </section>
-    <section class="jobs"><div><span class="eyebrow">RENDER QUEUE</span><h2>作品台</h2></div><div id="jobs"><p class="empty">还没有作品。完成上面三步，它会出现在这里。</p></div></section>
-  </main><div id="toast"></div><script src="/app.js"></script>
-</body></html>
+
+    <section id="generation-workspace" class="generation-workspace" aria-labelledby="generation-title">
+      <div class="workspace-heading">
+        <div>
+          <span class="eyebrow">02 / 03 · Generation</span>
+          <h2 id="generation-title">生成参数</h2>
+          <p>确认章节、情感、分段与格式，先试听再生成完整内容。</p>
+        </div>
+        <span id="generation-state" class="workspace-state">等待创作设置</span>
+      </div>
+      <div class="generation-panel">
+        <form id="job-form">
+          <small id="book-selection" class="selection-confirm"></small>
+          <div class="range">
+            <label>起始章
+              <input name="chapter_start" type="number" min="1" value="1">
+            </label>
+            <label>结束章
+              <input name="chapter_end" type="number" min="1" placeholder="末章">
+            </label>
+          </div>
+          <label>情感强度 <output id="strength-value">65%</output>
+            <input name="emotion_strength" type="range" min="0" max="1" step="0.05" value="0.65">
+          </label>
+          <label>渐进分段
+            <select name="segment_chars">
+              <option value="1000">约 1000 字（更快开播）</option>
+              <option value="2000" selected>约 2000 字（推荐）</option>
+              <option value="5000">约 5000 字（更少分段）</option>
+            </select>
+          </label>
+          <label>成品格式
+            <select name="output_format">
+              <option value="mp3" selected>MP3（推荐，体积小）</option>
+              <option value="wav">WAV（无损，体积大）</option>
+            </select>
+          </label>
+          <div class="job-actions">
+            <button class="generate-button" name="mode" value="preview" disabled>生成试听</button>
+            <button class="generate-button secondary" name="mode" value="full" disabled>生成完整范围</button>
+          </div>
+          <small id="job-hint" class="job-hint">每段完成后会立即出现在作品台；全部完成后提供完整合并版。</small>
+        </form>
+      </div>
+    </section>
+
+    <section class="jobs" aria-labelledby="jobs-title">
+      <div class="section-heading">
+        <span class="eyebrow">03 / 03 · Output</span>
+        <h2 id="jobs-title">作品与进度</h2>
+        <p>可在线播放已完成分段；运行中的任务可取消，失败任务可从断点继续。</p>
+      </div>
+      <div id="jobs" aria-live="polite">
+        <p class="empty">还没有作品。完成上面三步，它会出现在这里。</p>
+      </div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=9"></script>
+</body>
+</html>

@@ -6,7 +6,7 @@ import wave
 from pathlib import Path
 
 from app import audio
-from app.audio import concatenate_wavs, encode_mp3
+from app.audio import concatenate_mp3s, concatenate_wavs, encode_mp3
 
 
 def write_tone(path: Path, frequency: int, seconds: float = 0.25, rate: int = 24000):
@@ -63,3 +63,22 @@ def test_real_mp3_encoding_is_smaller_than_pcm_when_ffmpeg_is_available(tmp_path
     write_tone(source, 220, seconds=2)
     encode_mp3(source, output)
     assert output.stat().st_size < source.stat().st_size / 4
+
+
+def test_real_mp3_segments_can_be_fast_concatenated(tmp_path):
+    try:
+        audio.ffmpeg_executable()
+    except RuntimeError:
+        pytest.skip("FFmpeg is installed with the project runtime, not this test interpreter")
+    first_wav = tmp_path / "first.wav"
+    second_wav = tmp_path / "second.wav"
+    first_mp3 = tmp_path / "first.mp3"
+    second_mp3 = tmp_path / "second.mp3"
+    output = tmp_path / "joined.mp3"
+    write_tone(first_wav, 220, seconds=1)
+    write_tone(second_wav, 330, seconds=1)
+    encode_mp3(first_wav, first_mp3)
+    encode_mp3(second_wav, second_mp3)
+    concatenate_mp3s([first_mp3, second_mp3], output)
+    assert output.stat().st_size > first_mp3.stat().st_size
+    assert not output.with_suffix(".concat.txt").exists()

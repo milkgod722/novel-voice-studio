@@ -3,14 +3,6 @@
 }
 
 textarea {
-  width: 100%;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  padding: 10px 2px;
-  color: var(--ink);
-  outline: none;
   resize: vertical;
-  font: inherit;
   line-height: 1.5;
 }
