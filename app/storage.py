@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import uuid
@@ -55,3 +56,14 @@ class Store:
             except (json.JSONDecodeError, OSError):
                 continue
         return sorted(result, key=lambda item: item.get("created_at", ""), reverse=True)
+
+    def delete(self, kind: str, item_id: str) -> None:
+        if kind not in {"voices", "books", "jobs"} or not item_id.isalnum():
+            raise ValueError("invalid storage path")
+        base = (self.root / kind).resolve()
+        target = (base / item_id).resolve()
+        if target.parent != base:
+            raise ValueError("invalid storage path")
+        if not (target / "meta.json").exists():
+            raise KeyError(item_id)
+        shutil.rmtree(target)

@@ -1,82 +1,112 @@
-# 技术设计：授权声音的情感小说朗读
+# 技术设计：多厂商远程声音复刻小说朗读
 
 ## 一、目标与边界
 
-输入是一段 3–120 秒、已获声音本人授权的日常语音，以及 TXT / Markdown / EPUB 小说；输出为带逐句情感变化的本地 WAV 有声书和可审计的生成清单。
+输入是一段已获本人授权的日常语音和 TXT / Markdown / EPUB 小说；输出是分片生成、可恢复、可在线播放和下载的有声书，默认 MP3，也可选择无损 WAV。
 
-当前版本定位为**单用户本地应用**。它不会抓取微信数据，而是接收微信导出或用户主动选择的音频文件。浏览器无法直接解析微信私有 SILK 编码，因此原生 `.silk` 需先在本机转换为标准音频。未经授权的第三方声音、公众人物冒充、远程多人服务不在范围内。
+本版本只调用远程 API，不加载本地 TTS 权重。服务运行在用户电脑上，但参考语音、小说分片和情感参数会按所选协议发送到远程 URL。凭据只保存在内存。
 
-## 二、核心选型
+系统不承诺“完美复刻”。它保证的是：
 
-### 主模型：IndexTTS2
+1. 不把测试音或预置音色标成克隆音色；
+2. 严格按厂商公开协议传递音色 ID、参考音和情感参数；
+3. 对厂商权限、白名单、同意录音和预注册流程给出明确提示；
+4. 对返回结果执行 WAV 校验，避免杂乱字节进入拼接链路。
 
-选择理由：
+## 二、适配器结构
 
-1. 零样本音色克隆，只需单段参考语音；
-2. 音色提示与情感控制解耦，不必用“悲伤的本人录音”才能合成悲伤语气；
-3. 原生提供 8 维情感向量和文本情感控制，覆盖小说对白；
-4. 中文与英文质量优先，适合中文小说；
-5. 本地部署，敏感声音不需要发送到云服务。
+`app/synth.py` 提供统一 `Synthesizer.synthesize(reference, text, emotion, output)` 接口：
 
-官方接口与模型说明：<https://github.com/index-tts/index-tts>。模型代码/权重使用前还需遵守仓库中的当前许可证，商业用途不能只依据本项目的 MIT 风格应用代码判断。
+- `MiMoVoiceCloneSynthesizer`：参考 WAV Base64 随请求发送，情感向量转中文演播指令。
+- `RemoteProviderSynthesizer`：按 `protocol` 构建阿里、腾讯、百度、Google、OpenAI 或 IndexTTS URL 请求。
+- `MockSynthesizer`：仅用于测试；默认禁止创建正式任务。
 
-备选是 Fun-CosyVoice 3，优势是多语种、方言、流式与自然语言指令；如果未来重点变成实时流式或多方言，可新增 `CosyVoiceSynthesizer`，无需改变业务 API。官方仓库：<https://github.com/FunAudioLLM/CosyVoice>。
+### 厂商协议映射
 
-## 三、端到端数据流
+| protocol | 请求 | 音频响应 | 情感 |
+|---|---|---|---|
+| `aliyun-cosyvoice` | Bearer JSON `SpeechSynthesizer` | JSON 音频 URL → WAV | `instruction` |
+| `tencent-tts` | TC3-HMAC-SHA256 `TextToVoice` | `Response.Audio` Base64 WAV | Category + Intensity |
+| `baidu-voice-clone` | Authorization JSON | 二进制 WAV | emotion 枚举 |
+| `google-cloud-tts` | OAuth Bearer + Project ID | `audioContent` Base64 LINEAR16/WAV | 文本韵律；无统一 emotion 枚举 |
+| `openai-tts` | Bearer `POST /audio/speech` | 二进制 WAV | `instructions` |
+| `indextts-url` | multipart 参考 WAV + 正文 + 8 维向量 | WAV、Base64 或 URL | 原生 `emo_vector` |
+
+阿里、腾讯、百度、Google、OpenAI 的合成阶段使用已经创建的音色 ID / cloning key。音色注册接口在鉴权、计费、审核、规定同意语句和异步状态上差异很大，因此不在“应用配置”动作中静默创建收费音色。
+
+## 三、数据流
 
 ```mermaid
 flowchart LR
-  A["微信语音 / 本地录音"] --> B["FFmpeg: 24kHz 单声道、响度标准化"]
-  C["TXT / MD / EPUB"] --> D["编码识别、EPUB spine、章节解析"]
-  D --> E["自然断句，约 110 字/片段"]
-  E --> F["文本线索 → 8 维情感向量"]
-  B --> G["IndexTTS2 音色提示"]
-  F --> G
-  G --> H["逐片段 WAV 与断点缓存"]
-  H --> I["无损拼接 audiobook.wav"]
-  H --> J["provenance.json 来源清单"]
+  A["微信语音 / 本地录音"] --> B["FFmpeg 24kHz mono WAV"]
+  C["TXT / MD / EPUB"] --> D["编码与章节解析"]
+  D --> E["按厂商限制自然断句"]
+  E --> F["文本 → 8 维情感向量"]
+  F --> S["相邻情感 15/70/15 平滑"]
+  B --> G["远程适配器"]
+  S --> G
+  H["预注册音色 ID / Voice Key"] --> G
+  G --> I["WAV 格式校验"]
+  I --> J["分片缓存与断点恢复"]
+  J --> P["按章节 / 约 2000 字渐进成片"]
+  P --> Q["已完成分段立即在线播放"]
+  P --> K["40ms 交叉淡化为连续 WAV"]
+  K --> M["默认压缩 64kbps MP3"]
+  K --> L["可选无损 WAV"]
+  M --> L
+  L --> N["网页播放 / 下载"]
 ```
 
-### 音频前处理
+### 情感映射
 
-`app/audio.py` 通过 FFmpeg 做高通、低通与 EBU 风格响度归一化，统一为模型稳定的 24 kHz / mono / 16-bit PCM。长度下限防止音色信息不足，上限避免用户误传整段节目。建议素材仍是 10–30 秒、单人、无背景音乐。
+内部向量顺序为：
 
-### 长文本处理
+```text
+[happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]
+```
 
-`app/text.py` 支持 UTF-8、GBK/GB18030 等常见中文编码。EPUB 优先读取 `container.xml → OPF manifest → spine`，按出版物声明的阅读顺序抽取正文。章节识别后按句末标点切分，超长句再在逗号、冒号等位置降级切分。
+- 小米、阿里、OpenAI：转换为自然语言演播 instruction。
+- 腾讯：映射为 `happy/angry/sad/fear/disgusted/amaze/peaceful`，强度转换到 50–200。
+- 百度：映射为 `happy/angry/down/fear/disgust/surprise`。
+- Google：保留标点和文本节奏；Instant Custom Voice 没有通用情绪枚举。
+- IndexTTS：直接提交完整 8 维向量。
 
-### 情感策略
+映射只使用厂商支持的控制面。若具体音色不支持情绪字段，厂商可能忽略或拒绝该参数，不能把这种结果描述为完美情感复刻。
 
-`app/emotion.py` 采用可解释、确定性的文本线索生成 `[happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]`。叙述默认保留平静分量；对白、叹号、疑问号和情绪词提升主情感。用户强度乘子限制在 0–1，默认 0.65。确定性策略便于测试和复现；后续可以把这一层替换为小型分类器或大语言模型，但不应让大模型直接生成音频。
+## 四、稳定性
 
-### 推理与恢复
+- 每个厂商有独立单片长度：腾讯 140 字，阿里/百度 450 字，IndexTTS 150 字。
+- HTTP 429、5xx、超时、连接重置和 `IncompleteRead` 最多重试 3 次。
+- 单线程队列避免同时消耗多个厂商配额，并保证章节顺序。
+- 未发布渐进段的成功 API 片段立即落盘；任务失败后可从当前段继续。渐进段发布后立即清理其 WAV 缓存，重试时跳过已发布段。
+- 多个 API 片段按章节和任务选择的约 1000 / 2000 / 5000 字组成渐进分段，分段发布后无需等待整本完成即可播放或下载。
+- 所有适配器输出进入统一 RIFF/WAVE 校验，不接受 HTML、JSON 错误页或 MP3 冒充 WAV。
+- 全部片段先做邻接情感平滑，再逐段生成；MiMo 温度固定为 0.25，所有指令要求音量、音高、语速与叙述者状态连续。
+- 最终合并用 40ms 线性交叉淡化替代固定静音；默认转为 24 kHz 单声道 64 kbps MP3。完整 MP3 由同规格渐进分段流复制拼接，成功后删除临时 WAV 分片。
+- 作品台为每个任务复用一个分段播放器；播放中暂停状态轮询，防止播放器被页面刷新重建。完成作品由 `/audio` 内嵌播放，`/download` 作为附件下载。
 
-`app/synth.py` 是引擎抽象。`IndexTTS2Synthesizer` 单例加载模型，并用锁保护单 GPU 推理。每个片段以序号落盘；同一任务失败后，已有 WAV 不重复计算。`MockSynthesizer` 只生成确定性测试音，用于 CI 和无 GPU 演示，界面明确标注它不是真实克隆。
+## 五、安全与隐私
 
-### 存储与来源
+- 上传声音前必须勾选授权确认。
+- SecretKey、API Key、OAuth Token 和 Voice Key 不写入 metadata、日志或健康接口。
+- API URL 禁止嵌入用户名、密码和 fragment。
+- `data/`、`.env`、音频、小说和模型文件被 Git 忽略。
+- Google / OpenAI 自定义声音需要厂商规定的 consent recording；应用不会绕过。
+- 公网或多人部署必须再增加登录、加密密钥存储、配额、审计、音色撤回、AI 合成标识和滥用检测。
 
-所有数据位于 `data/{voices,books,jobs}`。元数据用临时文件 + `os.replace` 原子更新，避免进程中断留下半写 JSON。每部作品包含 `provenance.json`，记录合成引擎、授权确认、声音/小说 ID、逐片段文本与情感向量。它不是不可移除的水印，但为个人本地工作流提供可审计来源。
+## 六、测试
 
-## 四、接口与并发
+| 层级 | 覆盖 |
+|---|---|
+| 文本与情感 | 章节、断句、顺序、8 维归一化 |
+| 音频管线 | 标准化、情感邻接平滑、交叉淡化、MP3/WAV 输出、来源记录 |
+| HTTP E2E | 上传、任务、进度、播放、下载、取消、重试、删除 |
+| 小米 | 自定义 URL/模型/鉴权、响应截断重试 |
+| 阿里 | JSON 合约、instruction、音频 URL 下载 |
+| 腾讯 | TC3 签名、FastVoiceType、情感参数、Base64 |
+| 百度 | voice_id、emotion、二进制 WAV |
+| Google | Project ID、OAuth、cloning key、Base64 |
+| OpenAI | custom voice 对象、instructions、WAV |
+| IndexTTS | multipart 参考音、8 维向量、三种响应形式 |
 
-- FastAPI 提供上传、资源库、创建任务、进度和下载接口；静态前端不依赖构建工具。
-- 单进程 `ThreadPoolExecutor(max_workers=1)` 与单 GPU 的实际吞吐一致，避免多个自回归任务争抢显存。
-- 浏览器每 2 秒轮询活动任务；完成后直接播放/下载 WAV。
-- 单文件默认限制 200 MB。生产部署还需反向代理级别的请求体限制和超时。
-
-## 五、测试策略与结果
-
-| 层级 | 已覆盖内容 | 结果 |
-|---|---|---|
-| 单元 | 章节、断句、顺序、情感语义、向量归一化 | 通过 |
-| 安全 | 未勾选本人授权时拒绝保存声音 | 通过 |
-| 服务 E2E | WAV 参考音 + 两章小说 → 队列 → 分片 → 拼接 → 来源记录 | 通过 |
-| HTTP E2E | 上传声音、上传小说、创建任务、查询、下载 WAV | 通过 |
-| UI | 桌面三栏、表单可访问性、引擎状态、390×844 响应式与无横向溢出 | 通过 |
-| 真实模型声学 | 需用户提供获授权真人语音并下载模型权重 | 待素材 |
-
-自动化执行结果：`5 passed`。真实声学测试不能用模拟音代替；上线门槛建议自然度、音色相似度、情感匹配度盲听 MOS 均值不低于 3.8，普通叙述 ASR 回转录 CER 不高于 8%。
-
-## 六、部署与生产化
-
-个人使用只监听 `127.0.0.1`。若扩展成多人产品，至少增加：身份认证、每用户加密密钥、声音授权凭证及撤回/删除流程、任务配额、显式 AI 合成标志、防公众人物冒充策略、审计日志、对象存储生命周期、内容版权确认，以及模型许可证和当地法律审查。
+合同测试不等于真实声学验收。真实验收需要有效账号、已授权音色和计费权限，并应分别测量自然度、音色相似度、情感匹配度和 ASR CER。

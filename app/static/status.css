@@ -1,0 +1,97 @@
+.job p {
+  margin: 3px 0;
+}
+
+.job-hint {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.selection-confirm {
+  background: rgba(179, 72, 47, 0.08);
+  border-left: 2px solid var(--red);
+  color: var(--ink);
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+.cancel-job,
+.retry-job {
+  align-self: start;
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+  padding: 8px 12px;
+}
+
+.job-tools {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.delete-job {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  padding: 8px 12px;
+}
+
+.segment-list {
+  border: 1px solid var(--line);
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 10px 12px;
+}
+
+.segment-list summary {
+  color: var(--red);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.segment-player {
+  align-items: end;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.segment-player label {
+  margin: 0;
+}
+
+.segment-player small {
+  color: var(--muted);
+  padding-bottom: 9px;
+}
+
+.segment-player audio,
+.full-audio,
+.full-audio audio {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.full-audio {
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .segment-player {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .segment-player small,
+  .segment-player a {
+    padding: 0;
+  }
+}

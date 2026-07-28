@@ -135,3 +135,41 @@ def chunk_text(text: str, max_chars: int = 110) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def plan_progressive_segments(
+    chapters: list[dict[str, str | int]],
+    chunk_chars: int,
+    segment_chars: int = 2000,
+) -> list[dict[str, object]]:
+    """Group synthesis chunks into chapter-aware, early-playable segments."""
+    segment_chars = max(chunk_chars, segment_chars)
+    planned: list[dict[str, object]] = []
+    for chapter in chapters:
+        chunks = chunk_text(str(chapter["text"]), chunk_chars)
+        if not chunks:
+            continue
+        groups: list[list[str]] = []
+        current: list[str] = []
+        current_chars = 0
+        for chunk in chunks:
+            if current and current_chars + len(chunk) > segment_chars:
+                groups.append(current)
+                current = []
+                current_chars = 0
+            current.append(chunk)
+            current_chars += len(chunk)
+        if current:
+            groups.append(current)
+        base_title = str(chapter["title"])
+        for group_index, group in enumerate(groups):
+            title = base_title
+            if len(groups) > 1:
+                title = f"{base_title} · {group_index + 1}/{len(groups)}"
+            planned.append({
+                "title": title,
+                "chapter_index": int(chapter["index"]),
+                "chunks": group,
+                "chars": sum(len(chunk) for chunk in group),
+            })
+    return planned

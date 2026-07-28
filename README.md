@@ -1,19 +1,34 @@
 # 小说声工坊
 
-用一段**已获本人授权**的日常语音克隆音色，把 TXT / Markdown / EPUB 小说生成富有感情的 WAV 有声书。数据默认只保存在本机。
+用一段**已获本人明确授权**的日常语音和 TXT / Markdown / EPUB 小说，通过远程 TTS / 声音复刻 API 生成有声书。生成结果可以直接在网页播放；默认下载体积更小的 64 kbps MP3，也可选择无损 WAV。
 
-## 已实现
+项目不再加载本地语音模型。API Key、SecretKey、Access Token 和 Voice Key 只保存在当前服务进程内，不写入磁盘；服务重启后需要重新填写。
 
-- 浏览器上传微信导出的 WAV / MP3 / M4A / OGG / WebM；自动转为 24 kHz 单声道并做响度、带宽标准化。
-- 中文编码识别、EPUB 正文抽取、章节识别、长文本按语义断句。
-- 每个片段从文本规划 8 维情感（快乐、愤怒、悲伤、恐惧、厌恶、忧郁、惊讶、平静）。
-- IndexTTS2 音色/情感解耦推理适配器；单 GPU 串行队列，片段缓存可用于失败续跑。
-- WAV 无损拼接、进度轮询、网页试听/下载、合成来源 `provenance.json`。
-- 强制授权确认；不把声音或小说上传到第三方。
+## 当前版本状态
 
-> 演示引擎会生成可听见的测试音，不会克隆声音。它用来快速验证完整产品流程。真实克隆需要按下文安装 IndexTTS2。
+- 页面固定为“创作设置 → 生成参数 → 作品与进度”三大区域。
+- 创作设置会按“语音模型 → 参考声音 → 小说文本”依次引导；前置条件未完成时，生成按钮保持禁用并明确提示下一步。
+- 默认输出 24 kHz、单声道、64 kbps MP3，支持长篇渐进分段、在线播放、断点重试、取消和删除。
+- 仓库不包含演示声音、小说、生成音频或 API Key，首次启动时作品库为空。
+- 当前自动化测试为 **40 项全部通过**；真实 MiMo 验收已覆盖参考音上传、小说导入、试听、完整两段生成、MP3 合并、HTTP Range 播放、网页分段切换和删除。
 
-## 1. 运行应用（演示模式）
+## 已支持的远程服务
+
+| 服务 | 参考声音使用方式 | 情感控制 | 页面需要填写 |
+|---|---|---|---|
+| 小米 MiMo（默认） | 每次请求直接发送上传的参考 WAV | 中文演播指令 | URL、模型、Key、鉴权方式 |
+| 阿里云 CosyVoice | 先在阿里创建克隆音色 ID | v3.5 克隆音色支持 instruction | URL、模型、DashScope Key、音色 ID |
+| 腾讯云语音合成 | 先完成声音复刻，取得 FastVoiceType | `EmotionCategory` + `EmotionIntensity` | URL、SecretId、SecretKey、FastVoiceType |
+| 百度智能云声音复刻 | 先创建 `voice_id` | happy/down/surprise/angry/fear/disgust | URL、Authorization Key、voice_id |
+| Google Cloud TTS | 先生成 Instant Custom Voice cloning key | 文本韵律、停顿和语速能力 | URL、OAuth Token、Project ID、cloning key |
+| OpenAI TTS | 使用已有 `voice_*` 自定义音色或预置 voice | `instructions` 演播指令 | URL、模型、API Key、Voice ID |
+| IndexTTS URL | 每次 multipart 请求直接发送参考 WAV | 原生 8 维 `emo_vector` | URL、模型、可选 Key |
+
+“支持”不等于可以绕过厂商的产品开通、音色注册或授权流程。Google Instant Custom Voice 目前需要白名单，OpenAI Custom Voice 仅向符合条件的客户开放；两者都要求规定的同意录音。阿里、腾讯和百度需要先创建音色 ID，再由本项目执行长文本分片合成。
+
+任何模型都不能技术上保证“完美复刻”。实际音色相似度和感情表现取决于参考音质量、厂商模型、音色权限、语言、文本和情感参数。本项目会按厂商支持能力传递情感，而不会把预置音色伪装成声音克隆。
+
+## 运行
 
 Windows PowerShell：
 
@@ -22,60 +37,123 @@ uv sync --extra test --python 3.11
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-打开 <http://127.0.0.1:8000>。不要使用系统现有的 Python 3.14；PyTorch/IndexTTS2 使用独立的 Python 3.11 环境。
-
-## 2. 启用真实音色克隆
-
-先安装模型（权重较大，需要稳定网络）：
+可先执行以下自检，确认 FFmpeg 运行时已经随依赖安装：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_indextts.ps1
+uv run python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
 ```
 
-IndexTTS2 维护独立环境。最稳妥的部署方式是在它的环境中补装本项目 Web 依赖，再从项目根目录启动：
+打开 <http://127.0.0.1:8000>：
 
-```powershell
-cd IndexTTS2
-uv pip install -e ..
-$env:NVS_ENGINE="indextts2"
-$env:INDEXTTS_PATH=(Get-Location).Path
-$env:INDEXTTS_MODEL_DIR=(Join-Path (Get-Location).Path "checkpoints")
-$env:PYTHONPATH=(Split-Path (Get-Location).Path -Parent)
-uv run --no-sync uvicorn app.main:app --app-dir .. --host 127.0.0.1 --port 8000
+1. 在“创作设置”中配置远程语音服务、上传 10–30 秒参考语音并导入小说。
+2. 在“生成参数”中选择章节、情感强度、渐进分段大小与 MP3 / WAV，建议先生成前 300 字试听。
+3. 在“作品与进度”中查看排队和生成状态，播放已完成分段，或取消、重试、删除和下载作品。
+
+不要把本地服务直接暴露到公网。真实凭据不要写进代码、README、`.env` 或 Git 提交。
+
+## 各厂商配置说明
+
+### 小米 MiMo
+
+默认使用：
+
+```text
+协议：mimo-chat
+URL：https://api.xiaomimimo.com/v1/chat/completions
+模型：mimo-v2.5-tts-voiceclone
+鉴权：api-key
 ```
 
-本机检测到 RTX 4090 Laptop 16 GB；代码默认 FP16、关闭 DeepSpeed 和自定义 CUDA kernel，优先保证 Windows 可用性。首次加载模型会较慢。
+兼容网关也可填写自己的 URL、模型和 Bearer / `api-key`。官方小米 URL 要求开放平台按量调用的 `sk-` Key，Token Plan 的 `tp-` Key 不适用于该小说应用。
 
-## 语音素材建议
+### 阿里云 CosyVoice
 
-- 10–30 秒，单人、无音乐、无明显回声；自然聊天比刻意压嗓更好。
-- 微信原生 `.silk` 不是通用音频容器，先用可信工具在本机转成 WAV；微信导出的 M4A 可直接上传。
-- 参考音频决定音色，小说文字逐句决定情绪。情感强度建议从 0.65 开始；过高容易损失音色相似度和清晰度。
-- 只克隆自己的声音，或取得声音本人对具体用途的明确授权。公开发布时应说明音频由 AI 合成。
+项目调用非流式 `SpeechSynthesizer` HTTP API并请求 WAV。页面中的音色 ID 必须提前通过阿里 [Voice Cloning API](https://help.aliyun.com/en/model-studio/cosyvoice-clone-api-reference) 创建。推荐使用支持克隆音色 instruction 的 `cosyvoice-v3.5-flash`。
+
+### 腾讯云
+
+项目直接实现 TC3-HMAC-SHA256 签名并调用 `TextToVoice`。一句话复刻音色使用 `VoiceType=200000000`，页面填写 `FastVoiceType`。SecretId 与 SecretKey 分开填写，均不落盘。
+
+### 百度智能云
+
+页面填写已经创建的数字 `voice_id`。项目调用非流式声音复刻 TTS，强制请求 24 kHz WAV，并把文本情感映射为百度支持的 emotion 值。
+
+### Google Cloud Text-to-Speech
+
+页面 Key 字段填写短期 OAuth Access Token，不是服务账号 JSON；Project ID 单独填写。中文 Instant Custom Voice 的官方语言代码是 `cmn-CN`。Voice Key 是通过 [Chirp 3 Instant Custom Voice](https://docs.cloud.google.com/text-to-speech/docs/chirp3-instant-custom-voice) 授权流程生成的 cloning key。
+
+### OpenAI TTS
+
+默认调用 `POST /v1/audio/speech`，模型为 `gpt-4o-mini-tts`。自定义音色填写 `voice_*` ID；如果账号没有 Custom Voice 权限，也可填写预置 voice，但那不是对上传声音的克隆。自定义音色的创建需要 consent recording，参见 [OpenAI Audio API](https://developers.openai.com/api/reference/resources/audio/subresources/voices/methods/create)。
+
+### IndexTTS URL 合约
+
+IndexTTS 官方仓库没有规定统一 HTTP 服务，因此本项目定义以下 multipart 请求：
+
+| 字段 | 内容 |
+|---|---|
+| `spk_audio_prompt` | 24 kHz 单声道参考 WAV |
+| `text` | 当前小说分片 |
+| `emo_vector` | JSON 数组 `[happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]` |
+| `emo_alpha` | `0.65` |
+| `use_random` | `false` |
+| `model` | 页面填写的模型名 |
+
+服务可以直接返回 `audio/wav`，也可以返回 JSON 中的 Base64 `audio` / `audio_data` / `data`，或音频 `url`。
+
+## 稳定性与隐私
+
+- 前端明确分为创作设置、生成参数、作品与进度三大区域；创作设置按“模型 → 声音 → 小说”逐项显示状态，并自动引导到下一项必要操作。
+- 同名声音或小说会在下拉框追加来源文件与短 ID，避免误选旧素材；静态资源带版本号，升级后不会混用旧缓存。
+- 上传音频统一转为 24 kHz、单声道、16-bit PCM WAV。
+- 无效音频、空小说或超出大小限制的上传会返回明确错误，并自动删除已经创建的临时目录，不会留下隐藏垃圾数据。
+- 长文本按厂商单次上限切分；腾讯 140 字、百度/阿里 450 字，其他服务使用更长分片。
+- 相邻分片的 8 维情感向量采用 15% / 70% / 15% 邻接平滑；MiMo 使用较低随机性和统一叙述状态指令。
+- 合并时使用 40ms 短交叉淡化，不再在每个片段间硬插入 180ms 静音。
+- 长篇任务按章节优先渐进发布；每个任务可选择约 1000 / 2000 / 5000 字一段，提交前显示所选章节字数与预计分段数。
+- 作品台每个任务只创建一个分段播放器，通过下拉框切换已完成段，避免数百段长篇生成数百个 `<audio>` 控件拖慢页面。
+- 播放期间暂停自动轮询刷新，避免正在收听的音频被 DOM 重建打断；长任务运行时仍可继续提交，后续任务自动排队。
+- 全部分段完成后直接对同规格 MP3 做快速无损拼接，不再为了完整版本重新生成巨大的临时 PCM WAV。
+- HTTP 429、5xx、响应截断、连接重置和超时会指数退避重试。
+- 未发布分段的 WAV 分片落盘缓存以支持断点恢复；一个渐进分段发布后立即清理其临时 WAV，重试时直接跳过已发布分段，避免长篇持续膨胀。
+- 默认成品为 24 kHz 单声道 64 kbps MP3，通常约为原始 16-bit PCM WAV 的六分之一；需要无损归档时可选 WAV。
+- 任务可取消、重试和删除；删除会移除作品及其全部音频文件。
+- 完成的作品通过 `/audio` 路由在网页内播放，通过 `/download` 下载。
+- `data/`、`.env`、用户音频、小说和 API 凭据不会进入 Git。
 
 ## 测试
 
 ```powershell
-uv run pytest
+uv run pytest -q
 ```
 
-测试覆盖文本/章节切分、情感向量、授权门禁、音频标准化、完整业务服务与 HTTP 上传→任务→WAV 下载链路。真实模型的声学验收需要一段真人参考音，执行：
+当前共 40 项自动化测试，覆盖：
 
-1. 以真实引擎启动应用并上传 10–30 秒参考音；
-2. 用固定的中性、开心、悲伤、紧张各 3 句生成测试集；
-3. 人工盲听 MOS（自然度、音色相似度、情感匹配度，各 1–5 分），建议上线门槛均值 ≥ 3.8；
-4. 用 ASR 回转录计算 CER，建议普通叙述 ≤ 8%，强情感对白 ≤ 12%；
-5. 未达到门槛时优先清理参考音噪声，其次降低情感强度，最后调整断句长度。
+- 文本、章节、50 万字分段压力、情感向量和音频管线；
+- HTTP 上传、生成、播放、下载、取消、恢复和删除，以及已发布分段的缓存清理与断点跳过；
+- 小米响应截断重试；
+- 阿里请求与音频 URL 下载；
+- 腾讯 TC3 签名、复刻音色和情感参数；
+- 百度二进制 WAV 与 emotion；
+- Google cloning key；
+- OpenAI Custom Voice 和 instructions；
+- IndexTTS multipart 参考音与 8 维情感合约。
+
+真实声学验收仍需各厂商的有效账户、已授权音色和计费权限。建议固定一组中性、开心、悲伤、紧张文本，分别评估自然度、音色相似度、情感匹配度和 ASR 回转录 CER。
 
 ## API
 
-- `GET /api/health`：引擎状态
-- `POST /api/voices`：上传参考语音（multipart: `file`, `name`, `consent`）
-- `POST /api/books`：上传小说（multipart: `file`, `title`）
-- `POST /api/jobs`：创建生成任务
+- `GET /api/health`：当前引擎状态
+- `POST /api/config/voice-clone`：配置远程服务
+- `POST /api/config/mimo`：向后兼容别名
+- `POST /api/voices`：上传参考语音（`file`, `name`, `consent`, 可选 `transcript`）
+- `POST /api/books`：上传小说
+- `POST /api/jobs`：创建试听或完整任务
 - `GET /api/jobs/{id}`：查询进度
-- `GET /api/jobs/{id}/audio`：试听/下载
-
-## 生产化建议
-
-当前版本适合单机个人使用。若要开放给多人，必须增加登录、配额、加密存储、删除权、审计、显式合成标识与滥用检测；不要直接把本地服务暴露到公网。IndexTTS2 的模型许可包含使用限制，商业发布前应重新审阅其当前许可证并咨询法律意见。
+- `POST /api/jobs/{id}/retry`：从已有分片继续
+- `POST /api/jobs/{id}/cancel`：取消任务
+- `DELETE /api/jobs/{id}`：删除作品和音频
+- `GET /api/jobs/{id}/audio`：网页播放
+- `GET /api/jobs/{id}/download`：下载所选格式（默认 MP3）
+- `GET /api/jobs/{id}/segments/{index}/audio`：播放已经完成的渐进分段
+- `GET /api/jobs/{id}/segments/{index}/download`：下载单个分段
